@@ -1,0 +1,249 @@
+// 💸 CASALFI — Finanças para Casal
+// Desenvolvido por Hugo Wenner
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─── USUÁRIO ───────────────────────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  avatar       String?
+  phone        String?
+  coupleId     String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  couple          Couple?        @relation(fields: [coupleId], references: [id])
+  accounts        Account[]
+  cards           Card[]
+  transactions    Transaction[]
+  sentInvites     CoupleInvite[] @relation("Inviter")
+  receivedInvites CoupleInvite[] @relation("Invitee")
+  partner1Of      Couple?        @relation("Partner1")
+  partner2Of      Couple?        @relation("Partner2")
+  goalContribs    GoalContrib[]
+
+  @@map("users")
+}
+
+// ─── CASAL ─────────────────────────────────────────────────────────────────
+
+model Couple {
+  id         String   @id @default(cuid())
+  partner1Id String   @unique
+  partner2Id String?  @unique
+  inviteCode String   @unique
+  status     String   @default("pending") // pending | active
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  partner1     User           @relation("Partner1", fields: [partner1Id], references: [id])
+  partner2     User?          @relation("Partner2", fields: [partner2Id], references: [id])
+  users        User[]
+  invites      CoupleInvite[]
+  categories   Category[]
+  transactions Transaction[]
+  budgets      Budget[]
+  goals        Goal[]
+
+  @@map("couples")
+}
+
+model CoupleInvite {
+  id        String   @id @default(cuid())
+  coupleId  String
+  inviterId String
+  inviteeId String?
+  code      String   @unique
+  status    String   @default("pending") // pending | accepted | expired
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  couple   Couple @relation(fields: [coupleId], references: [id])
+  inviter  User   @relation("Inviter", fields: [inviterId], references: [id])
+  invitee  User?  @relation("Invitee", fields: [inviteeId], references: [id])
+
+  @@map("couple_invites")
+}
+
+// ─── CONTAS E CARTÕES ──────────────────────────────────────────────────────
+
+model Account {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  type      String   @default("checking") // checking | savings | wallet | investment
+  balance   Float    @default(0)
+  color     String?
+  icon      String?
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@map("accounts")
+}
+
+model Card {
+  id             String   @id @default(cuid())
+  userId         String
+  name           String
+  brand          String?  // visa | mastercard | elo | amex
+  lastFourDigits String?
+  creditLimit    Float    @default(0)
+  availableLimit Float    @default(0)
+  closingDay     Int?
+  dueDay         Int?
+  color          String?
+  icon           String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@map("cards")
+}
+
+// ─── CATEGORIAS ────────────────────────────────────────────────────────────
+
+model Category {
+  id        String   @id @default(cuid())
+  coupleId  String?
+  userId    String?
+  name      String
+  icon      String
+  color     String
+  type      String   // income | expense | both
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  couple       Couple?       @relation(fields: [coupleId], references: [id])
+  transactions Transaction[]
+  budgets      Budget[]
+
+  @@map("categories")
+}
+
+// ─── TRANSAÇÕES ────────────────────────────────────────────────────────────
+
+model Transaction {
+  id          String   @id @default(cuid())
+  userId      String
+  coupleId    String?
+  accountId   String?
+  cardId      String?
+  categoryId  String?
+  description String
+  amount      Float
+  type        String   @default("expense") // income | expense | transfer
+  status      String   @default("completed") // pending | completed | cancelled
+  date        DateTime
+
+  // Split de gastos
+  splitType    String  @default("individual") // individual | equal | proportional | custom
+  splitRatio   String? // JSON: { "userId1": 0.6, "userId2": 0.4 }
+  paidByUserId String
+
+  // Parcelamento
+  installmentId    String?
+  installmentNum   Int?
+  installmentTotal Int?
+
+  // Recorrência
+  isRecurring       Boolean @default(false)
+  recurringPeriod   String? // monthly | weekly | yearly
+  recurringParentId String?
+
+  // IA-ready
+  aiCategory   String?
+  aiConfidence Float?
+  rawInput     String?
+  source       String  @default("manual") // manual | whatsapp | ai | import
+
+  notes     String?
+  tags      String? // JSON array
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  couple   Couple?   @relation(fields: [coupleId], references: [id])
+  account  Account?  @relation(fields: [accountId], references: [id])
+  card     Card?     @relation(fields: [cardId], references: [id])
+  category Category? @relation(fields: [categoryId], references: [id])
+
+  @@index([userId, date])
+  @@index([coupleId, date])
+  @@index([type, date])
+  @@map("transactions")
+}
+
+// ─── ORÇAMENTO MENSAL ──────────────────────────────────────────────────────
+
+model Budget {
+  id         String  @id @default(cuid())
+  coupleId   String?
+  userId     String?
+  categoryId String?
+  month      String  // "2026-05"
+  amount     Float
+  alertAt    Float   @default(0.8) // % para alertar (0.8 = 80%)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  couple   Couple?   @relation(fields: [coupleId], references: [id])
+  category Category? @relation(fields: [categoryId], references: [id])
+
+  @@unique([coupleId, categoryId, month])
+  @@map("budgets")
+}
+
+// ─── METAS ─────────────────────────────────────────────────────────────────
+
+model Goal {
+  id            String    @id @default(cuid())
+  coupleId      String
+  name          String
+  targetAmount  Float
+  currentAmount Float     @default(0)
+  deadline      DateTime?
+  icon          String?
+  color         String?
+  status        String    @default("active") // active | completed | cancelled
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  couple  Couple        @relation(fields: [coupleId], references: [id])
+  contribs GoalContrib[]
+
+  @@map("goals")
+}
+
+model GoalContrib {
+  id        String   @id @default(cuid())
+  goalId    String
+  userId    String
+  amount    Float
+  note      String?
+  createdAt DateTime @default(now())
+
+  goal Goal @relation(fields: [goalId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("goal_contribs")
+}

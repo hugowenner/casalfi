@@ -1,0 +1,132 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background:        var(--background);
+  --color-foreground:        var(--foreground);
+  --color-card:              var(--card);
+  --color-card-foreground:   var(--card-foreground);
+  --color-primary:           var(--primary);
+  --color-primary-foreground:var(--primary-foreground);
+  --color-secondary:         var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted:             var(--muted);
+  --color-muted-foreground:  var(--muted-foreground);
+  --color-accent:            var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive:       var(--destructive);
+  --color-border:            var(--border);
+  --color-input:             var(--input);
+  --color-ring:              var(--ring);
+  --color-income:            var(--income);
+  --color-expense:           var(--expense);
+  --radius-sm:               calc(var(--radius) - 4px);
+  --radius-md:               calc(var(--radius) - 2px);
+  --radius-lg:               var(--radius);
+  --radius-xl:               calc(var(--radius) + 4px);
+}
+
+:root {
+  --radius: 0.75rem;
+  --background:          oklch(0.09 0.015 265);
+  --foreground:          oklch(0.97 0.005 265);
+  --card:                oklch(0.13 0.015 265);
+  --card-foreground:     oklch(0.97 0.005 265);
+  --primary:             oklch(0.65 0.22 292);
+  --primary-foreground:  oklch(0.99 0 0);
+  --secondary:           oklch(0.18 0.015 265);
+  --secondary-foreground:oklch(0.97 0.005 265);
+  --muted:               oklch(0.17 0.012 265);
+  --muted-foreground:    oklch(0.60 0.012 265);
+  --accent:              oklch(0.20 0.020 265);
+  --accent-foreground:   oklch(0.97 0.005 265);
+  --destructive:         oklch(0.60 0.22 22);
+  --border:              oklch(0.22 0.015 265);
+  --input:               oklch(0.18 0.015 265);
+  --ring:                oklch(0.65 0.22 292);
+  --income:              oklch(0.65 0.18 150);
+  --expense:             oklch(0.62 0.22 22);
+}
+
+/* ── Base ──────────────────────────────────────────────────────────────── */
+
+* {
+  border-color: var(--border);
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-feature-settings: "rlig" 1, "calt" 1;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Glassmorphism ─────────────────────────────────────────────────────── */
+
+.glass {
+  background: oklch(0.14 0.015 265 / 0.7);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid oklch(0.28 0.015 265 / 0.5);
+}
+
+.glass-card {
+  background: oklch(0.13 0.015 265 / 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid oklch(0.25 0.015 265 / 0.6);
+}
+
+/* ── Gradientes ────────────────────────────────────────────────────────── */
+
+.gradient-primary {
+  background: linear-gradient(135deg, oklch(0.55 0.25 285) 0%, oklch(0.65 0.20 310) 100%);
+}
+
+.gradient-income {
+  background: linear-gradient(135deg, oklch(0.50 0.18 150) 0%, oklch(0.60 0.16 175) 100%);
+}
+
+.gradient-expense {
+  background: linear-gradient(135deg, oklch(0.52 0.22 22) 0%, oklch(0.55 0.18 350) 100%);
+}
+
+.gradient-balance {
+  background: linear-gradient(135deg,
+    oklch(0.14 0.03 285) 0%,
+    oklch(0.12 0.025 310) 100%
+  );
+}
+
+/* ── Scrollbar ─────────────────────────────────────────────────────────── */
+
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: oklch(0.30 0.015 265);
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover { background: oklch(0.40 0.015 265); }
+
+/* ── Animações ─────────────────────────────────────────────────────────── */
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.animate-slide-up { animation: slide-up 0.3s ease forwards; }
+.animate-fade-in  { animation: fade-in 0.2s ease forwards; }
+
+/* ── Utilitários financeiros ───────────────────────────────────────────── */
+
+.amount-income { color: var(--income); }
+.amount-expense { color: var(--expense); }
