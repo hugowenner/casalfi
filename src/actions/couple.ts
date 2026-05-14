@@ -52,9 +52,28 @@ export async function joinCoupleAction(
 ): Promise<ActionResult<CoupleWithPartners>> {
   const session = await requireAuth();
 
-  const user = await db.user.findUnique({ where: { id: session.userId } });
-  if (user?.coupleId) {
-    return { success: false, error: "Você já está em um casal" };
+  const user = await db.user.findUnique({
+    where: { id: session.userId },
+    include: { couple: true },
+  });
+
+  // Bloquear apenas se já está em casal ATIVO
+  if (user?.coupleId && user.couple?.status === "active") {
+    return { success: false, error: "Você já está em um casal ativo" };
+  }
+
+  // Se tem casal pendente onde é o partner1 (criou e ninguém entrou), abandonar para entrar no do parceiro
+  if (
+    user?.coupleId &&
+    user.couple?.status === "pending" &&
+    user.couple.partner1Id === session.userId
+  ) {
+    await db.coupleInvite.deleteMany({ where: { coupleId: user.coupleId } });
+    await db.couple.delete({ where: { id: user.coupleId } });
+    await db.user.update({
+      where: { id: session.userId },
+      data: { coupleId: null },
+    });
   }
 
   const invite = await db.coupleInvite.findUnique({ where: { code } });

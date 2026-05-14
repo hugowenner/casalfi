@@ -200,7 +200,7 @@ export function CoupleView({ couple, userId }: CoupleViewProps) {
         </CardContent>
       </Card>
 
-      {/* Código de convite (se pendente) */}
+      {/* Código de convite (se pendente e é o criador) */}
       {!isActive && myInviteCode && couple.partner1Id === userId && (
         <Card className="border-border/50">
           <CardHeader className="pb-3">
@@ -224,6 +224,38 @@ export function CoupleView({ couple, userId }: CoupleViewProps) {
               </Button>
             </div>
             <p className="text-xs text-muted-foreground text-center">Válido por 7 dias</p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Entrar com código do parceiro (se pendente — ainda não vinculado) */}
+      {!isActive && (
+        <Card className="border-border/50">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <UserPlus className="h-4 w-4 text-primary" />
+              Tenho o código do meu parceiro
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              Se seu parceiro já gerou um código, digite aqui para se conectar:
+            </p>
+            <Input
+              placeholder="Digite o código (ex: ABCD1234)"
+              value={inviteCode}
+              onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
+              maxLength={8}
+              className="tracking-widest text-center font-mono text-lg"
+            />
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={handleJoinCouple}
+              disabled={isPending || !inviteCode}
+            >
+              {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Conectar com parceiro"}
+            </Button>
           </CardContent>
         </Card>
       )}
