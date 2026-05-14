@@ -36,7 +36,39 @@ export interface DashboardStats {
   monthIncome: number;
   monthExpense: number;
   savingsRate: number;
-  partnerBalance?: number;
+}
+
+export interface PartnerBreakdown {
+  userId: string;
+  name: string;
+  avatar: string | null;
+  totalIncome: number;
+  totalExpense: number;
+  accountsBalance: number;
+}
+
+export interface SplitSummary {
+  totalExpense: number;
+  myExpense: number;
+  partnerExpense: number;
+  owedAmount: number;   // valor absoluto da diferença
+  iOwe: boolean;        // true = eu devo ao parceiro; false = parceiro me deve
+  balanced: boolean;    // gastos iguais
+  myName: string;
+  partnerName: string;
+}
+
+export interface CoupleDashboardData {
+  combinedBalance: number;
+  totalIncome: number;
+  totalExpense: number;
+  savingsRate: number;
+  me: PartnerBreakdown;
+  partner: PartnerBreakdown;
+  splitSummary: SplitSummary;
+  categoryStats: CategoryStat[];
+  dailyChart: DailySpending[];
+  recentTransactions: TransactionWithRelations[];
 }
 
 export interface CategoryStat {

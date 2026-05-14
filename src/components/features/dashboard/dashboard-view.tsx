@@ -1,28 +1,45 @@
 "use client";
 
 import { useState } from "react";
-import { motion } from "framer-motion";
-import { Plus, Eye, EyeOff } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Plus, Eye, EyeOff, User, Heart } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StatsGrid } from "./stats-grid";
 import { SpendingChart } from "./spending-chart";
 import { CategoryChart } from "./category-chart";
 import { RecentTransactions } from "./recent-transactions";
+import { CoupleStats } from "./couple-stats";
+import { PartnerChart } from "./partner-chart";
+import { CoupleFeed } from "./couple-feed";
 import { AddTransactionDialog } from "@/components/features/transactions/add-transaction-dialog";
 import { formatMonthYear } from "@/lib/format";
-import type { DashboardData } from "@/types";
+import { cn } from "@/lib/utils";
+import type { DashboardData, CoupleDashboardData } from "@/types";
 
 interface DashboardViewProps {
-  data: DashboardData;
+  personalData: DashboardData;
+  coupleData: CoupleDashboardData | null;
   userName: string;
+  partnerName: string | null;
   month: string;
 }
 
-export function DashboardView({ data, userName, month }: DashboardViewProps) {
+type ViewMode = "personal" | "couple";
+
+export function DashboardView({
+  personalData,
+  coupleData,
+  userName,
+  partnerName,
+  month,
+}: DashboardViewProps) {
   const [showValues, setShowValues] = useState(true);
   const [addOpen, setAddOpen] = useState(false);
+  const [viewMode, setViewMode] = useState<ViewMode>("personal");
 
   const firstName = userName.split(" ")[0];
+  const hasCouple = coupleData !== null;
+  const isCouple = viewMode === "couple" && hasCouple;
 
   return (
     <div className="px-4 py-6 md:px-8 space-y-6 max-w-5xl mx-auto">
@@ -52,21 +69,102 @@ export function DashboardView({ data, userName, month }: DashboardViewProps) {
         </div>
       </motion.div>
 
-      {/* Stats */}
-      <StatsGrid stats={data.stats} showValues={showValues} />
+      {/* Toggle Pessoal / Casal */}
+      {hasCouple && (
+        <motion.div
+          initial={{ opacity: 0, y: -6 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.05 }}
+          className="flex items-center gap-1 p-1 bg-secondary rounded-2xl w-fit"
+        >
+          <button
+            onClick={() => setViewMode("personal")}
+            className={cn(
+              "flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium transition-all duration-200",
+              viewMode === "personal"
+                ? "bg-background text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            <User className="h-3.5 w-3.5" />
+            Pessoal
+          </button>
+          <button
+            onClick={() => setViewMode("couple")}
+            className={cn(
+              "flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium transition-all duration-200",
+              viewMode === "couple"
+                ? "bg-background text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            <Heart className="h-3.5 w-3.5" />
+            Casal
+          </button>
+        </motion.div>
+      )}
 
-      {/* Gráficos */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2">
-          <SpendingChart data={data.dailyChart} showValues={showValues} />
-        </div>
-        <div>
-          <CategoryChart data={data.categoryStats} showValues={showValues} />
-        </div>
-      </div>
+      {/* Conteúdo com animação de troca */}
+      <AnimatePresence mode="wait">
+        {!isCouple ? (
+          /* ── VISÃO PESSOAL ────────────────────────────────────────── */
+          <motion.div
+            key="personal"
+            initial={{ opacity: 0, x: -10 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 10 }}
+            transition={{ duration: 0.18 }}
+            className="space-y-6"
+          >
+            <StatsGrid stats={personalData.stats} showValues={showValues} />
 
-      {/* Transações recentes */}
-      <RecentTransactions transactions={data.recentTransactions} showValues={showValues} />
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              <div className="lg:col-span-2">
+                <SpendingChart data={personalData.dailyChart} showValues={showValues} />
+              </div>
+              <div>
+                <CategoryChart data={personalData.categoryStats} showValues={showValues} />
+              </div>
+            </div>
+
+            <RecentTransactions
+              transactions={personalData.recentTransactions}
+              showValues={showValues}
+            />
+          </motion.div>
+        ) : (
+          /* ── VISÃO CASAL ──────────────────────────────────────────── */
+          <motion.div
+            key="couple"
+            initial={{ opacity: 0, x: 10 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -10 }}
+            transition={{ duration: 0.18 }}
+            className="space-y-6"
+          >
+            <CoupleStats data={coupleData!} showValues={showValues} />
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              <div className="lg:col-span-2">
+                <SpendingChart data={coupleData!.dailyChart} showValues={showValues} />
+              </div>
+              <div>
+                <PartnerChart
+                  me={coupleData!.me}
+                  partner={coupleData!.partner}
+                  showValues={showValues}
+                />
+              </div>
+            </div>
+
+            <CoupleFeed
+              transactions={coupleData!.recentTransactions}
+              showValues={showValues}
+              myId={coupleData!.me.userId}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* FAB mobile */}
       <button

@@ -4,6 +4,7 @@ import type { TransactionInput } from "@/validators/transaction";
 import type {
   TransactionWithRelations,
   DashboardData,
+  CoupleDashboardData,
   CategoryStat,
   DailySpending,
   TransactionFilters,
@@ -245,6 +246,155 @@ export async function getDashboardData(
 
   return {
     stats: { totalBalance, monthIncome, monthExpense, savingsRate },
+    categoryStats,
+    dailyChart,
+    recentTransactions: (transactions as TransactionWithRelations[]).slice(0, 10),
+  };
+}
+
+// ── DASHBOARD DO CASAL ────────────────────────────────────────────────────
+
+export async function getCoupleDashboardData(
+  myId: string,
+  coupleId: string,
+  month: string,
+  myInfo: { id: string; name: string; avatar: string | null },
+  partnerInfo: { id: string; name: string; avatar: string | null }
+): Promise<CoupleDashboardData> {
+  const start = startOfMonth(parseISO(`${month}-01`));
+  const end = endOfMonth(parseISO(`${month}-01`));
+
+  // Todas as transações do casal no mês
+  const transactions = await db.transaction.findMany({
+    where: { coupleId, date: { gte: start, lte: end } },
+    include: {
+      category: true,
+      account: true,
+      card: true,
+      user: { select: { id: true, name: true, avatar: true } },
+    },
+    orderBy: { date: "desc" },
+  });
+
+  // Saldo das contas de ambos
+  const [myAccounts, partnerAccounts] = await Promise.all([
+    db.account.findMany({ where: { userId: myId } }),
+    db.account.findMany({ where: { userId: partnerInfo.id } }),
+  ]);
+
+  const myBalance = myAccounts.reduce((s, a) => s + a.balance, 0);
+  const partnerBalance = partnerAccounts.reduce((s, a) => s + a.balance, 0);
+  const combinedBalance = myBalance + partnerBalance;
+
+  // Stats por pessoa
+  let totalIncome = 0;
+  let totalExpense = 0;
+  let myIncome = 0;
+  let myExpense = 0;
+  let partnerIncome = 0;
+  let partnerExpense = 0;
+
+  for (const t of transactions) {
+    if (t.type === "income") {
+      totalIncome += t.amount;
+      if (t.userId === myId) myIncome += t.amount;
+      else partnerIncome += t.amount;
+    }
+    if (t.type === "expense") {
+      totalExpense += t.amount;
+      if (t.userId === myId) myExpense += t.amount;
+      else partnerExpense += t.amount;
+    }
+  }
+
+  const savingsRate =
+    totalIncome > 0 ? ((totalIncome - totalExpense) / totalIncome) * 100 : 0;
+
+  // Split: cada um deveria pagar metade do total
+  const halfExpense = totalExpense / 2;
+  const diff = myExpense - halfExpense; // positivo = parceiro me deve; negativo = eu devo
+  const owedAmount = Math.abs(diff);
+  const balanced = owedAmount < 0.01;
+
+  // Categorias (casal inteiro)
+  const categoryMap = new Map<string, CategoryStat>();
+  const expenseTotal = transactions
+    .filter((t) => t.type === "expense")
+    .reduce((s, t) => s + t.amount, 0);
+
+  for (const t of transactions) {
+    if (t.type !== "expense" || !t.category) continue;
+    const key = t.categoryId ?? "sem-categoria";
+    if (!categoryMap.has(key)) {
+      categoryMap.set(key, {
+        categoryId: key,
+        name: t.category.name,
+        icon: t.category.icon,
+        color: t.category.color,
+        total: 0,
+        percentage: 0,
+        count: 0,
+      });
+    }
+    const stat = categoryMap.get(key)!;
+    stat.total += t.amount;
+    stat.count += 1;
+  }
+
+  const categoryStats = Array.from(categoryMap.values())
+    .map((s) => ({
+      ...s,
+      percentage: expenseTotal > 0 ? (s.total / expenseTotal) * 100 : 0,
+    }))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 6);
+
+  // Gráfico diário
+  const days = eachDayOfInterval({ start, end });
+  const dailyChart: DailySpending[] = days.map((day) => {
+    const dayStr = format(day, "yyyy-MM-dd");
+    const dayTxs = transactions.filter(
+      (t) => format(t.date, "yyyy-MM-dd") === dayStr
+    );
+    return {
+      day: format(day, "dd"),
+      date: dayStr,
+      income: dayTxs.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0),
+      expense: dayTxs.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0),
+    };
+  });
+
+  return {
+    combinedBalance,
+    totalIncome,
+    totalExpense,
+    savingsRate,
+    me: {
+      userId: myId,
+      name: myInfo.name,
+      avatar: myInfo.avatar,
+      totalIncome: myIncome,
+      totalExpense: myExpense,
+      accountsBalance: myBalance,
+    },
+    partner: {
+      userId: partnerInfo.id,
+      name: partnerInfo.name,
+      avatar: partnerInfo.avatar,
+      totalIncome: partnerIncome,
+      totalExpense: partnerExpense,
+      accountsBalance: partnerBalance,
+    },
+    splitSummary: {
+      totalExpense,
+      myExpense,
+      partnerExpense,
+      owedAmount,
+      iOwe: diff < 0,
+      balanced,
+      myName: myInfo.name.split(" ")[0],
+      partnerName: partnerInfo.name.split(" ")[0],
+    },
     categoryStats,
     dailyChart,
     recentTransactions: (transactions as TransactionWithRelations[]).slice(0, 10),
