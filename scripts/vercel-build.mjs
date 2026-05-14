@@ -18,5 +18,5 @@ writeFileSync("prisma/schema.prisma", patched);
 console.log("✓ Schema atualizado para PostgreSQL");
 
 execSync("npx prisma generate", { stdio: "inherit" });
-execSync("npx prisma migrate deploy", { stdio: "inherit" });
+execSync("npx prisma db push --accept-data-loss", { stdio: "inherit" });
 execSync("next build", { stdio: "inherit" });
