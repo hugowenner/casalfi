@@ -17,7 +17,9 @@ export async function createTransaction(
   coupleId: string | null,
   input: TransactionInput
 ): Promise<TransactionWithRelations> {
-  const date = parseISO(input.date);
+  // Interpretar a data como horário local (meio-dia) para evitar deslocamento de fuso
+  const [y, mo, d] = input.date.split("-").map(Number);
+  const date = new Date(y, mo - 1, d, 12, 0, 0);
   const paidByUserId = input.paidByUserId ?? userId;
 
   const tx = await db.$transaction(async (tx) => {
