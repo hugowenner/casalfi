@@ -1,49 +1,81 @@
-// Orquestrador da integração Telegram.
-// Recebe um TelegramUpdate e decide o que fazer:
-//   - /start, /ajuda → mensagem de boas-vindas
-//   - /vincular CODIGO → vincula conta
-//   - /resumo → resumo do mês atual
-//   - /ultimas → últimas 5 transações
-//   - /desfazer → confirmação de exclusão (via teclado inline)
-//   - callback_query → ações dos botões inline
-//   - texto livre → parseia com IA e cria transação
-// Nunca acessa o Prisma diretamente — delega para os services especializados.
+// Orquestrador da integração Telegram — UX Premium.
+//
+// Fluxos suportados:
+//   1. Texto livre → IA parseia → cria transação
+//   2. Botão menu (💸/💰) → inline categorias → usuário digita valor → cria sem IA
+//   3. /desfazer → confirmação → exclusão
+//   4. /resumo, /ultimas (paginada), /config
+//   5. callback_query → callback router centralizado
 
 import { db } from "@/lib/db";
 import {
   sendTelegramMessage,
   sendWithKeyboard,
+  sendWithPersistentMenu,
   editMessageText,
   answerCallbackQuery,
 } from "@/services/telegram.service";
 import { parseTransactionFromText } from "@/services/ai-transaction-parser.service";
 import { createTransaction, deleteTransaction } from "@/services/transaction.service";
-import { afterTransactionKeyboard, confirmDeleteKeyboard, emptyKeyboard } from "@/services/telegram-keyboards";
+import {
+  afterExpenseKeyboard,
+  afterIncomeKeyboard,
+  confirmDeleteKeyboard,
+  cancelFlowKeyboard,
+  expenseCategoryKeyboard,
+  incomeCategoryKeyboard,
+  paginationKeyboard,
+  configMenuKeyboard,
+  emptyKeyboard,
+} from "@/services/telegram-keyboards";
+import { mainMenu, MENU_BUTTONS } from "@/services/telegram-menus";
+import {
+  getState,
+  setState,
+  clearState,
+  ConversationState,
+} from "@/services/telegram-state.service";
 import { formatCurrency } from "@/lib/format";
 import { format, startOfMonth, endOfMonth, parseISO } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import type { TelegramUpdate } from "@/types/telegram";
 import type { TransactionInput } from "@/validators/transaction";
 
+// ── Constantes ────────────────────────────────────────────────────────────
+
+const PAGE_SIZE = 5;
+
+// Descrições padrão por categoria (fluxo de botões — sem chamar IA)
+const CATEGORY_DEFAULT_DESCRIPTION: Record<string, string> = {
+  "Alimentação": "Refeição",
+  "Supermercado": "Compras no mercado",
+  "Transporte": "Transporte",
+  "Moradia": "Despesa de moradia",
+  "Saúde": "Saúde",
+  "Educação": "Educação",
+  "Lazer": "Lazer",
+  "Roupas": "Compra de roupas",
+  "Streaming": "Streaming",
+  "Outros": "Outros",
+  "Salário": "Salário",
+  "Freelance": "Freelance",
+  "Investimentos": "Rendimento",
+};
+
 // ── handleTelegramUpdate ──────────────────────────────────────────────────
 
 export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void> {
-  // ── Callback query (clique em botão inline) ────────────────────────────
   if (update.callback_query) {
-    await handleCallbackQuery(update.callback_query);
+    await callbackRouter(update.callback_query);
     return;
   }
 
   const msg = update.message;
-
   if (!msg?.text || !msg.from) return;
   if (msg.from.is_bot) return;
 
   if (msg.chat.type !== "private") {
-    await sendTelegramMessage(
-      msg.chat.id,
-      "⚠️ Por segurança, só respondo em conversas privadas."
-    );
+    await sendTelegramMessage(msg.chat.id, "⚠️ Por segurança, só respondo em conversas privadas.");
     return;
   }
 
@@ -51,48 +83,75 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
   const telegramUserId = msg.from.id;
   const text = msg.text.trim();
 
-  // ── Roteamento de comandos ─────────────────────────────────────────────
+  // ── Comandos ───────────────────────────────────────────────────────────
 
-  if (text.startsWith("/start")) {
-    await handleStart(chatId);
-    return;
-  }
-
-  if (text.startsWith("/ajuda") || text.startsWith("/help")) {
-    await handleHelp(chatId);
-    return;
-  }
-
+  if (text.startsWith("/start")) { await handleStart(chatId); return; }
+  if (text.startsWith("/ajuda") || text.startsWith("/help")) { await handleHelp(chatId); return; }
+  if (text.startsWith("/config")) { await handleConfig(chatId); return; }
+  if (text.startsWith("/resumo")) { await handleResumo(chatId, telegramUserId); return; }
+  if (text.startsWith("/ultimas")) { await handleUltimas(chatId, telegramUserId, 1); return; }
   if (text.startsWith("/vincular")) {
-    const parts = text.split(" ");
-    const token = parts[1]?.toUpperCase();
+    const token = text.split(" ")[1]?.toUpperCase();
     await handleVincular(chatId, telegramUserId, token);
     return;
   }
-
-  if (text.startsWith("/resumo")) {
-    await handleResumo(chatId, telegramUserId);
-    return;
-  }
-
-  if (text.startsWith("/ultimas")) {
-    await handleUltimas(chatId, telegramUserId);
-    return;
-  }
-
   if (text.startsWith("/desfazer") || isDeleteIntent(text)) {
     await handleDesfazer(chatId, telegramUserId);
     return;
   }
+  if (text === "/cancelar" || text === "cancelar") {
+    await handleCancelar(chatId, telegramUserId);
+    return;
+  }
 
-  // ── Criar transação via IA ─────────────────────────────────────────────
+  // ── Botões do menu persistente ────────────────────────────────────────
 
+  if (text === MENU_BUTTONS.EXPENSE) { await handleAddExpense(chatId, telegramUserId); return; }
+  if (text === MENU_BUTTONS.INCOME) { await handleAddIncome(chatId, telegramUserId); return; }
+  if (text === MENU_BUTTONS.SUMMARY) { await handleResumo(chatId, telegramUserId); return; }
+  if (text === MENU_BUTTONS.LATEST) { await handleUltimas(chatId, telegramUserId, 1); return; }
+  if (text === MENU_BUTTONS.CONFIG) { await handleConfig(chatId); return; }
+  if (text === MENU_BUTTONS.HELP) { await handleHelp(chatId); return; }
+
+  // ── Verificar estado da conversa ──────────────────────────────────────
+  // Se o usuário selecionou uma categoria e está aguardando o valor,
+  // interceptamos a mensagem antes de chamar a IA.
+
+  const user = await db.user.findUnique({
+    where: { telegramId: String(telegramUserId) },
+    select: { id: true, name: true, coupleId: true },
+  });
+
+  if (user) {
+    const state = await getState(user.id);
+    if (state?.state === ConversationState.WAITING_AMOUNT) {
+      await handleAmountFromState(chatId, user, text, state.category!, state.transactionType!);
+      return;
+    }
+  }
+
+  // ── Texto livre → IA ──────────────────────────────────────────────────
   await handleTransactionMessage(chatId, telegramUserId, text);
 }
 
-// ── handleCallbackQuery ───────────────────────────────────────────────────
+// ── Callback router centralizado ─────────────────────────────────────────
+//
+// Namespace  │ Ação              │ Exemplo
+// ───────────┼───────────────────┼────────────────────────────────
+// undo       │ undo:confirm:id   │ mostra confirmação de exclusão
+//            │ undo:do:id        │ executa exclusão
+//            │ undo:cancel       │ cancela
+// cat        │ cat:expense:Nome  │ categoria de despesa selecionada
+//            │ cat:income:Nome   │ categoria de receita selecionada
+// latest     │ latest:page:N     │ navega para página N
+// sum        │ sum:show          │ exibe resumo
+// add        │ add:expense       │ inicia fluxo de despesa
+//            │ add:income        │ inicia fluxo de receita
+// cfg        │ cfg:menu          │ abre config
+//            │ cfg:close         │ fecha config
+//            │ cfg:daily|goals   │ placeholder — em breve
 
-async function handleCallbackQuery(
+async function callbackRouter(
   cq: NonNullable<TelegramUpdate["callback_query"]>
 ): Promise<void> {
   const data = cq.data ?? "";
@@ -100,52 +159,262 @@ async function handleCallbackQuery(
   const messageId = cq.message?.message_id;
   const telegramUserId = cq.from.id;
 
-  // Sempre responde ao callback para remover o "loading" no botão
-  await answerCallbackQuery(cq.id);
+  // Sempre responde ao callback para remover o loading no botão
+  // O texto aparece como toast de ~2s no celular
+  const [ns, action, param] = data.split(":");
 
-  if (!chatId) return;
-
-  // ── undo_confirm:txId — usuário clicou em "↩️ Desfazer" após transação ─
-
-  if (data.startsWith("undo_confirm:")) {
-    const txId = data.split(":")[1];
-    await handleUndoConfirm(chatId, messageId, telegramUserId, txId);
+  if (!chatId) {
+    await answerCallbackQuery(cq.id);
     return;
   }
 
-  // ── do_delete:txId — usuário confirmou a exclusão ─────────────────────
-
-  if (data.startsWith("do_delete:")) {
-    const txId = data.split(":")[1];
-    await handleDoDelete(chatId, messageId, telegramUserId, txId);
-    return;
-  }
-
-  // ── cancel_delete — usuário cancelou ──────────────────────────────────
-
-  if (data === "cancel_delete") {
-    if (messageId) {
-      await editMessageText(
-        chatId,
-        messageId,
-        `✋ *Operação cancelada.*\n\nA transação foi mantida.`,
-        emptyKeyboard
-      );
+  // ── namespace: undo ────────────────────────────────────────────────────
+  if (ns === "undo") {
+    if (action === "confirm") {
+      await answerCallbackQuery(cq.id);
+      await handleUndoConfirm(chatId, messageId, telegramUserId, param);
+    } else if (action === "do") {
+      await handleUndoDo(chatId, messageId, telegramUserId, param, cq.id);
+    } else if (action === "cancel") {
+      await answerCallbackQuery(cq.id, "✋ Operação cancelada");
+      if (messageId) {
+        await editMessageText(chatId, messageId, `✋ *Operação cancelada.*\n\nA transação foi mantida.`, emptyKeyboard);
+      }
+      // Limpa também qualquer estado WAITING_AMOUNT ativo
+      const user = await db.user.findUnique({ where: { telegramId: String(telegramUserId) }, select: { id: true } });
+      if (user) await clearState(user.id);
     }
     return;
   }
 
-  // ── show_summary — atalho para o resumo mensal ─────────────────────────
+  // ── namespace: cat (categoria selecionada via botão) ───────────────────
+  if (ns === "cat") {
+    const type = action as "expense" | "income";
+    const category = param;
 
-  if (data === "show_summary") {
+    const user = await db.user.findUnique({
+      where: { telegramId: String(telegramUserId) },
+      select: { id: true },
+    });
+
+    if (!user) {
+      await answerCallbackQuery(cq.id, "🔗 Vincule sua conta primeiro");
+      return;
+    }
+
+    const emoji = type === "expense" ? "💸" : "💰";
+    const emojiCat = categoryEmoji(category);
+
+    await answerCallbackQuery(cq.id, `${emojiCat} ${category} selecionada`);
+    await setState(user.id, ConversationState.WAITING_AMOUNT, { category, transactionType: type });
+
+    const prompt =
+      `${emoji} *${category}*\n\n` +
+      `Qual o valor? Pode enviar apenas o número.\n\n` +
+      `Exemplos: \`45\`  \`45,50\`  \`R$ 120\``;
+
+    if (messageId) {
+      await editMessageText(chatId, messageId, prompt, cancelFlowKeyboard());
+    } else {
+      await sendWithKeyboard(chatId, prompt, cancelFlowKeyboard());
+    }
+    return;
+  }
+
+  // ── namespace: latest (paginação) ─────────────────────────────────────
+  if (ns === "latest") {
+    await answerCallbackQuery(cq.id);
+    const page = parseInt(param ?? "1", 10) || 1;
+    const user = await db.user.findUnique({
+      where: { telegramId: String(telegramUserId) },
+      select: { id: true, coupleId: true },
+    });
+    if (!user) return;
+    await sendUltimasPage(chatId, user.id, user.coupleId, page, messageId);
+    return;
+  }
+
+  // ── namespace: sum (resumo) ────────────────────────────────────────────
+  if (ns === "sum") {
+    await answerCallbackQuery(cq.id, "📊 Carregando resumo...");
     await handleResumo(chatId, telegramUserId);
     return;
   }
+
+  // ── namespace: add (iniciar fluxo pelo botão) ─────────────────────────
+  if (ns === "add") {
+    await answerCallbackQuery(cq.id);
+    if (action === "expense") await handleAddExpense(chatId, telegramUserId);
+    else if (action === "income") await handleAddIncome(chatId, telegramUserId);
+    return;
+  }
+
+  // ── namespace: cfg (configurações) ────────────────────────────────────
+  if (ns === "cfg") {
+    if (action === "close") {
+      await answerCallbackQuery(cq.id, "✅ Fechado");
+      if (messageId) await editMessageText(chatId, messageId, `⚙️ _Configurações fechadas._`, emptyKeyboard);
+    } else if (action === "daily" || action === "goals" || action === "categories") {
+      await answerCallbackQuery(cq.id, "🚧 Em breve!");
+      if (messageId) {
+        await editMessageText(
+          chatId, messageId,
+          `⚙️ *Configurações*\n\n🚧 Esta funcionalidade será lançada em breve.\n\nFique de olho nas atualizações!`,
+          configMenuKeyboard()
+        );
+      }
+    } else if (action === "menu") {
+      await answerCallbackQuery(cq.id);
+      await handleConfig(chatId);
+    } else {
+      await answerCallbackQuery(cq.id);
+    }
+    return;
+  }
+
+  // Fallback para callbacks antigos (compatibilidade com mensagens já enviadas)
+  if (data.startsWith("undo_confirm:")) {
+    await answerCallbackQuery(cq.id);
+    await handleUndoConfirm(chatId, messageId, telegramUserId, data.split(":")[1]);
+    return;
+  }
+  if (data.startsWith("do_delete:")) {
+    await handleUndoDo(chatId, messageId, telegramUserId, data.split(":")[1], cq.id);
+    return;
+  }
+  if (data === "cancel_delete") {
+    await answerCallbackQuery(cq.id, "✋ Cancelado");
+    if (messageId) await editMessageText(chatId, messageId, `✋ *Operação cancelada.*`, emptyKeyboard);
+    return;
+  }
+  if (data === "show_summary") {
+    await answerCallbackQuery(cq.id, "📊 Carregando...");
+    await handleResumo(chatId, telegramUserId);
+    return;
+  }
+
+  await answerCallbackQuery(cq.id);
+}
+
+// ── Fluxo: iniciar despesa ────────────────────────────────────────────────
+
+async function handleAddExpense(chatId: number, telegramUserId: number): Promise<void> {
+  const user = await db.user.findUnique({
+    where: { telegramId: String(telegramUserId) },
+    select: { id: true },
+  });
+
+  if (!user) {
+    await sendTelegramMessage(chatId, `🔗 Vincule sua conta primeiro.\n\nEnvie \`/start\` para ver como.`);
+    return;
+  }
+
+  await sendWithKeyboard(
+    chatId,
+    `💸 *Registrar gasto*\n\nEscolha a categoria:`,
+    expenseCategoryKeyboard()
+  );
+}
+
+// ── Fluxo: iniciar receita ────────────────────────────────────────────────
+
+async function handleAddIncome(chatId: number, telegramUserId: number): Promise<void> {
+  const user = await db.user.findUnique({
+    where: { telegramId: String(telegramUserId) },
+    select: { id: true },
+  });
+
+  if (!user) {
+    await sendTelegramMessage(chatId, `🔗 Vincule sua conta primeiro.\n\nEnvie \`/start\` para ver como.`);
+    return;
+  }
+
+  await sendWithKeyboard(
+    chatId,
+    `💰 *Registrar receita*\n\nEscolha a categoria:`,
+    incomeCategoryKeyboard()
+  );
+}
+
+// ── Fluxo: valor digitado após categoria (sem IA) ─────────────────────────
+
+async function handleAmountFromState(
+  chatId: number,
+  user: { id: string; name: string; coupleId: string | null },
+  text: string,
+  category: string,
+  type: "income" | "expense"
+): Promise<void> {
+  const amount = parseAmount(text);
+
+  if (!amount) {
+    await sendWithKeyboard(
+      chatId,
+      `❌ Não entendi o valor. Tente: \`45\` ou \`45,50\``,
+      cancelFlowKeyboard()
+    );
+    return;
+  }
+
+  await clearState(user.id);
+
+  const description = CATEGORY_DEFAULT_DESCRIPTION[category] ?? category;
+  const categoryId = await resolveCategoryId(category, user.coupleId, type);
+  const today = format(new Date(), "yyyy-MM-dd");
+
+  const input: TransactionInput = {
+    description,
+    amount,
+    type,
+    date: today,
+    categoryId: categoryId ?? undefined,
+    splitType: "individual",
+    paidByUserId: user.id,
+    isRecurring: false,
+  };
+
+  let createdId: string | undefined;
+  try {
+    const tx = await createTransaction(user.id, user.coupleId, input, {
+      source: "telegram",
+      rawInput: text,
+      aiCategory: category,
+      aiConfidence: 1.0,
+    });
+    createdId = tx.id;
+  } catch (err) {
+    console.error("[Telegram] Erro ao criar transação:", err);
+    await sendTelegramMessage(chatId, `❌ Erro ao registrar. Tente novamente.`);
+    return;
+  }
+
+  const emoji = type === "expense" ? "💸" : "💰";
+  const label = type === "expense" ? "Despesa" : "Receita";
+  const successText =
+    `${emoji} *${label} cadastrada!*\n\n` +
+    `💵 ${formatCurrency(amount)}\n` +
+    `🏷 ${category}\n` +
+    `📝 ${description}`;
+
+  const keyboard = createdId
+    ? (type === "expense" ? afterExpenseKeyboard(createdId) : afterIncomeKeyboard(createdId))
+    : emptyKeyboard;
+
+  await sendWithKeyboard(chatId, successText, keyboard);
+}
+
+// ── Cancelar fluxo em andamento ───────────────────────────────────────────
+
+async function handleCancelar(chatId: number, telegramUserId: number): Promise<void> {
+  const user = await db.user.findUnique({
+    where: { telegramId: String(telegramUserId) },
+    select: { id: true },
+  });
+  if (user) await clearState(user.id);
+  await sendTelegramMessage(chatId, `✋ Operação cancelada.`);
 }
 
 // ── handleUndoConfirm ─────────────────────────────────────────────────────
-// Usuário clicou "↩️ Desfazer" na mensagem de confirmação de transação.
-// Edita a mensagem para mostrar o diálogo de confirmação de exclusão.
 
 async function handleUndoConfirm(
   chatId: number,
@@ -181,20 +450,20 @@ async function handleUndoConfirm(
   }
 }
 
-// ── handleDoDelete ────────────────────────────────────────────────────────
-// Usuário confirmou "✅ Confirmar" no diálogo de exclusão.
+// ── handleUndoDo ─────────────────────────────────────────────────────────
 
-async function handleDoDelete(
+async function handleUndoDo(
   chatId: number,
   messageId: number | undefined,
   telegramUserId: number,
-  txId: string
+  txId: string,
+  callbackQueryId: string
 ): Promise<void> {
   const user = await db.user.findUnique({
     where: { telegramId: String(telegramUserId) },
     select: { id: true },
   });
-  if (!user) return;
+  if (!user) { await answerCallbackQuery(callbackQueryId); return; }
 
   const tx = await db.transaction.findFirst({
     where: { id: txId, userId: user.id },
@@ -202,55 +471,52 @@ async function handleDoDelete(
   });
 
   if (!tx) {
-    const notFound = `❌ Transação não encontrada ou já removida.`;
-    if (messageId) {
-      await editMessageText(chatId, messageId, notFound, emptyKeyboard);
-    } else {
-      await sendTelegramMessage(chatId, notFound);
-    }
+    await answerCallbackQuery(callbackQueryId, "❌ Não encontrada");
+    if (messageId) await editMessageText(chatId, messageId, `❌ Transação não encontrada ou já removida.`, emptyKeyboard);
     return;
   }
 
   try {
     await deleteTransaction(tx.id, user.id);
     const emoji = tx.type === "expense" ? "💸" : "💰";
-    const doneText =
-      `✅ *Transação removida!*\n\n` +
-      `${emoji} ${formatCurrency(tx.amount)} — ${tx.description}`;
-
+    await answerCallbackQuery(callbackQueryId, "✅ Transação removida!");
+    const doneText = `✅ *Transação removida!*\n\n${emoji} ${formatCurrency(tx.amount)} — ${tx.description}`;
     if (messageId) {
       await editMessageText(chatId, messageId, doneText, emptyKeyboard);
     } else {
       await sendTelegramMessage(chatId, doneText);
     }
   } catch {
+    await answerCallbackQuery(callbackQueryId, "❌ Erro ao remover");
     const errText = `❌ Não foi possível remover a transação.`;
-    if (messageId) {
-      await editMessageText(chatId, messageId, errText, emptyKeyboard);
-    } else {
-      await sendTelegramMessage(chatId, errText);
-    }
+    if (messageId) await editMessageText(chatId, messageId, errText, emptyKeyboard);
   }
 }
 
-// ── Handlers individuais ──────────────────────────────────────────────────
+// ── handleStart — Onboarding premium ────────────────────────────────────
 
 async function handleStart(chatId: number): Promise<void> {
-  await sendTelegramMessage(
-    chatId,
+  const welcomeText =
     `👋 *Bem-vindo ao CASALFI!*\n\n` +
-    `Eu registro seus gastos e receitas automaticamente.\n\n` +
+    `Registro automático de gastos e receitas para casais.\n\n` +
+    `*O que você pode fazer:*\n` +
+    `💸 Registrar gastos por categoria\n` +
+    `💰 Registrar receitas\n` +
+    `📊 Ver resumo mensal instantâneo\n` +
+    `📅 Acompanhar histórico\n` +
+    `↩️ Desfazer qualquer transação\n\n` +
     `*Para começar:*\n` +
     `1. Abra o app CASALFI → Configurações\n` +
     `2. Clique em "Gerar código Telegram"\n` +
     `3. Envie aqui: \`/vincular SEU_CODIGO\`\n\n` +
-    `Depois é só mandar mensagens como:\n` +
-    `• "gastei 80 no mercado"\n` +
-    `• "uber 25"\n` +
-    `• "recebi 3000 salário"\n\n` +
-    `Use /ajuda para ver todos os comandos.`
-  );
+    `*Após vincular, registre gastos de dois jeitos:*\n` +
+    `• Toque em *💸 Gasto* no menu abaixo\n` +
+    `• Ou escreva: _"gastei 80 no mercado"_`;
+
+  await sendWithPersistentMenu(chatId, welcomeText, mainMenu());
 }
+
+// ── handleHelp ────────────────────────────────────────────────────────────
 
 async function handleHelp(chatId: number): Promise<void> {
   await sendTelegramMessage(
@@ -258,19 +524,30 @@ async function handleHelp(chatId: number): Promise<void> {
     `*Comandos disponíveis:*\n\n` +
     `/vincular CODIGO — vincula sua conta\n` +
     `/resumo — resumo de gastos do mês\n` +
-    `/ultimas — últimas 5 transações\n` +
+    `/ultimas — últimas transações\n` +
     `/desfazer — remove a última transação\n` +
+    `/config — configurações\n` +
     `/ajuda — exibe esta mensagem\n\n` +
-    `*Exemplos de gastos:*\n` +
-    `• gastei 80 no mercado\n` +
-    `• uber 25 reais\n` +
-    `• almoço 35\n` +
-    `• pizza 70 dividido (divide 50/50)\n\n` +
-    `*Exemplos de receitas:*\n` +
-    `• recebi 3000 de salário\n` +
-    `• freela 500`
+    `*Ou use o menu abaixo da tela* 👇\n\n` +
+    `*Exemplos de texto livre:*\n` +
+    `• _gastei 80 no mercado_\n` +
+    `• _uber 25 reais_\n` +
+    `• _pizza 70 dividido_ _(divide 50/50)_\n` +
+    `• _recebi 3000 de salário_`
   );
 }
+
+// ── handleConfig ──────────────────────────────────────────────────────────
+
+async function handleConfig(chatId: number): Promise<void> {
+  await sendWithKeyboard(
+    chatId,
+    `⚙️ *Configurações*\n\nEscolha uma opção:`,
+    configMenuKeyboard()
+  );
+}
+
+// ── handleVincular ────────────────────────────────────────────────────────
 
 async function handleVincular(
   chatId: number,
@@ -278,70 +555,46 @@ async function handleVincular(
   token: string | undefined
 ): Promise<void> {
   if (!token) {
-    await sendTelegramMessage(
-      chatId,
-      `❌ Informe o código gerado no app.\n\nEx: \`/vincular ABC123\``
-    );
+    await sendTelegramMessage(chatId, `❌ Informe o código gerado no app.\n\nEx: \`/vincular ABC123\``);
     return;
   }
 
   const user = await db.user.findUnique({
     where: { telegramLinkToken: token },
-    select: { id: true, name: true, telegramLinkAt: true, telegramId: true },
+    select: { id: true, name: true, telegramLinkAt: true },
   });
 
   if (!user) {
-    await sendTelegramMessage(
-      chatId,
-      `❌ Código inválido ou expirado.\n\nGere um novo código no app CASALFI.`
-    );
+    await sendTelegramMessage(chatId, `❌ Código inválido ou expirado.\n\nGere um novo no app CASALFI.`);
     return;
   }
 
-  const TEN_MINUTES = 10 * 60 * 1000;
-  const isExpired =
-    !user.telegramLinkAt ||
-    Date.now() - user.telegramLinkAt.getTime() > TEN_MINUTES;
+  const isExpired = !user.telegramLinkAt || Date.now() - user.telegramLinkAt.getTime() > 10 * 60 * 1000;
 
   if (isExpired) {
-    await db.user.update({
-      where: { id: user.id },
-      data: { telegramLinkToken: null, telegramLinkAt: null },
-    });
+    await db.user.update({ where: { id: user.id }, data: { telegramLinkToken: null, telegramLinkAt: null } });
     await sendTelegramMessage(chatId, `⏰ Código expirado. Gere um novo no app CASALFI.`);
     return;
   }
 
-  const existingLink = await db.user.findUnique({
-    where: { telegramId: String(telegramUserId) },
-    select: { id: true },
-  });
-
-  if (existingLink && existingLink.id !== user.id) {
-    await sendTelegramMessage(
-      chatId,
-      `⚠️ Este Telegram já está vinculado a outra conta CASALFI.`
-    );
+  const existing = await db.user.findUnique({ where: { telegramId: String(telegramUserId) }, select: { id: true } });
+  if (existing && existing.id !== user.id) {
+    await sendTelegramMessage(chatId, `⚠️ Este Telegram já está vinculado a outra conta CASALFI.`);
     return;
   }
 
   await db.user.update({
     where: { id: user.id },
-    data: {
-      telegramId: String(telegramUserId),
-      telegramLinkToken: null,
-      telegramLinkAt: null,
-    },
+    data: { telegramId: String(telegramUserId), telegramLinkToken: null, telegramLinkAt: null },
   });
 
   const firstName = user.name.split(" ")[0];
-  await sendTelegramMessage(
-    chatId,
-    `✅ *Conta vinculada com sucesso, ${firstName}!*\n\n` +
-    `Agora é só mandar seus gastos e receitas aqui.\n\n` +
-    `Ex: "gastei 80 no mercado"\n\n` +
-    `Use /ajuda para ver todos os comandos.`
-  );
+  const successText =
+    `✅ *Conta vinculada, ${firstName}!*\n\n` +
+    `Agora registre seus gastos pelo menu abaixo 👇\n\n` +
+    `Ou escreva diretamente: _"gastei 80 no mercado"_`;
+
+  await sendWithPersistentMenu(chatId, successText, mainMenu());
 }
 
 // ── handleResumo ──────────────────────────────────────────────────────────
@@ -364,17 +617,10 @@ async function handleResumo(chatId: number, telegramUserId: number): Promise<voi
 
   const transactions = await db.transaction.findMany({
     where: {
-      OR: [
-        { userId: user.id },
-        ...(user.coupleId ? [{ coupleId: user.coupleId }] : []),
-      ],
+      OR: [{ userId: user.id }, ...(user.coupleId ? [{ coupleId: user.coupleId }] : [])],
       date: { gte: start, lte: end },
     },
-    select: {
-      type: true,
-      amount: true,
-      category: { select: { name: true } },
-    },
+    select: { type: true, amount: true, category: { select: { name: true } } },
   });
 
   let totalIncome = 0;
@@ -397,23 +643,28 @@ async function handleResumo(chatId: number, telegramUserId: number): Promise<voi
   const topCats = Array.from(catMap.entries())
     .sort((a, b) => b[1] - a[1])
     .slice(0, 3)
-    .map(([name, val]) => `  • ${name}: ${formatCurrency(val)}`)
+    .map(([name, val]) => `  ${categoryEmoji(name)} ${name}: *${formatCurrency(val)}*`)
     .join("\n");
+
+  const savingsLine = totalIncome > 0
+    ? `\n💡 Taxa de poupança: *${Math.round(((totalIncome - totalExpense) / totalIncome) * 100)}%*`
+    : "";
 
   await sendTelegramMessage(
     chatId,
     `📊 *Resumo — ${monthLabel}*\n\n` +
     `💰 Receitas: *${formatCurrency(totalIncome)}*\n` +
     `💸 Despesas: *${formatCurrency(totalExpense)}*\n` +
-    `📈 Saldo: *${balanceSign}${formatCurrency(balance)}*\n\n` +
-    (topCats ? `*Top categorias:*\n${topCats}\n\n` : "") +
-    `_Acesse o app para ver o gráfico completo._`
+    `📈 Saldo: *${balanceSign}${formatCurrency(balance)}*` +
+    savingsLine +
+    (topCats ? `\n\n*Top categorias:*\n${topCats}` : "") +
+    `\n\n_Abra o app para ver o gráfico completo._`
   );
 }
 
-// ── handleUltimas ─────────────────────────────────────────────────────────
+// ── handleUltimas + paginação ─────────────────────────────────────────────
 
-async function handleUltimas(chatId: number, telegramUserId: number): Promise<void> {
+async function handleUltimas(chatId: number, telegramUserId: number, page: number): Promise<void> {
   const user = await db.user.findUnique({
     where: { telegramId: String(telegramUserId) },
     select: { id: true, coupleId: true },
@@ -424,42 +675,97 @@ async function handleUltimas(chatId: number, telegramUserId: number): Promise<vo
     return;
   }
 
-  const transactions = await db.transaction.findMany({
-    where: {
-      OR: [
-        { userId: user.id },
-        ...(user.coupleId ? [{ coupleId: user.coupleId }] : []),
-      ],
-    },
-    orderBy: { date: "desc" },
-    take: 5,
-    select: {
-      description: true,
-      amount: true,
-      type: true,
-      date: true,
-      category: { select: { name: true } },
-    },
-  });
+  await sendUltimasPage(chatId, user.id, user.coupleId, page);
+}
+
+async function sendUltimasPage(
+  chatId: number,
+  userId: string,
+  coupleId: string | null,
+  page: number,
+  editMessageId?: number
+): Promise<void> {
+  const where = {
+    OR: [{ userId }, ...(coupleId ? [{ coupleId }] : [])],
+  };
+
+  const [total, transactions] = await Promise.all([
+    db.transaction.count({ where }),
+    db.transaction.findMany({
+      where,
+      orderBy: { date: "desc" },
+      skip: (page - 1) * PAGE_SIZE,
+      take: PAGE_SIZE,
+      select: {
+        description: true,
+        amount: true,
+        type: true,
+        date: true,
+        category: { select: { name: true } },
+      },
+    }),
+  ]);
 
   if (transactions.length === 0) {
     await sendTelegramMessage(chatId, `📭 Nenhuma transação encontrada.`);
     return;
   }
 
+  const totalPages = Math.ceil(total / PAGE_SIZE);
   const lines = transactions.map((t) => {
     const emoji = t.type === "expense" ? "💸" : "💰";
     const dateStr = format(t.date, "dd/MM");
-    return `${emoji} ${dateStr} *${formatCurrency(t.amount)}* — ${t.description}`;
+    const cat = t.category?.name ? ` _${t.category.name}_` : "";
+    return `${emoji} ${dateStr} *${formatCurrency(t.amount)}*${cat} — ${t.description}`;
   });
 
-  await sendTelegramMessage(
+  const header = totalPages > 1
+    ? `📋 *Transações* (pág. ${page}/${totalPages}):\n\n`
+    : `📋 *Últimas transações:*\n\n`;
+
+  const text = header + lines.join("\n");
+  const keyboard = paginationKeyboard(page, totalPages);
+
+  if (editMessageId) {
+    await editMessageText(chatId, editMessageId, text, keyboard);
+  } else {
+    await sendWithKeyboard(chatId, text, keyboard);
+  }
+}
+
+// ── handleDesfazer ────────────────────────────────────────────────────────
+
+async function handleDesfazer(chatId: number, telegramUserId: number): Promise<void> {
+  const user = await db.user.findUnique({
+    where: { telegramId: String(telegramUserId) },
+    select: { id: true },
+  });
+
+  if (!user) {
+    await sendTelegramMessage(chatId, `🔗 Você ainda não vinculou sua conta.`);
+    return;
+  }
+
+  const last = await db.transaction.findFirst({
+    where: { userId: user.id, source: "telegram" },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, description: true, amount: true, type: true },
+  });
+
+  if (!last) {
+    await sendTelegramMessage(chatId, `❌ Nenhuma transação recente para desfazer.`);
+    return;
+  }
+
+  const emoji = last.type === "expense" ? "💸" : "💰";
+  await sendWithKeyboard(
     chatId,
-    `📋 *Últimas transações:*\n\n${lines.join("\n")}`
+    `⚠️ *Deseja remover esta transação?*\n\n${emoji} ${formatCurrency(last.amount)} — ${last.description}`,
+    confirmDeleteKeyboard(last.id)
   );
 }
 
-// ── handleTransactionMessage ──────────────────────────────────────────────
+// ── handleTransactionMessage (texto livre → IA) ───────────────────────────
 
 async function handleTransactionMessage(
   chatId: number,
@@ -485,21 +791,18 @@ async function handleTransactionMessage(
   const parsed = await parseTransactionFromText(text);
 
   if (!parsed) {
-    await sendTelegramMessage(
+    await sendWithKeyboard(
       chatId,
-      `🤔 Não entendi o valor da transação.\n\n` +
-      `Tente ser mais específico:\n` +
-      `• "gastei *80* no mercado"\n` +
-      `• "uber *25* reais"`
+      `🤔 Não entendi o valor.\n\nTente:\n• _"gastei 80 no mercado"_\n• _"uber 25"_\n\nOu use o menu abaixo para escolher a categoria:`,
+      expenseCategoryKeyboard()
     );
     return;
   }
 
   const categoryId = await resolveCategoryId(parsed.category, user.coupleId, parsed.type);
-
   const today = format(new Date(), "yyyy-MM-dd");
 
-  const transactionInput: TransactionInput = {
+  const input: TransactionInput = {
     description: parsed.description,
     amount: parsed.amount,
     type: parsed.type,
@@ -511,9 +814,8 @@ async function handleTransactionMessage(
   };
 
   let createdId: string | undefined;
-
   try {
-    const tx = await createTransaction(user.id, user.coupleId, transactionInput, {
+    const tx = await createTransaction(user.id, user.coupleId, input, {
       source: "telegram",
       rawInput: text,
       aiCategory: parsed.category,
@@ -522,52 +824,77 @@ async function handleTransactionMessage(
     createdId = tx.id;
   } catch (err) {
     console.error("[Telegram] Erro ao criar transação:", err);
-    await sendTelegramMessage(chatId, `❌ Erro ao registrar a transação. Tente novamente.`);
+    await sendTelegramMessage(chatId, `❌ Erro ao registrar. Tente novamente.`);
     return;
   }
 
   const emoji = parsed.type === "expense" ? "💸" : "💰";
-  const typeLabel = parsed.type === "expense" ? "Despesa" : "Receita";
+  const label = parsed.type === "expense" ? "Despesa" : "Receita";
   const splitInfo = parsed.splitType === "equal" ? "\n_Dividido 50/50_" : "";
-  const confidenceNote =
-    parsed.confidence < 0.7 ? "\n\n⚠️ _Confiança baixa — confira no app_" : "";
+  const confidenceNote = parsed.confidence < 0.7 ? "\n\n⚠️ _Confiança baixa — confira no app_" : "";
 
   const successText =
-    `${emoji} *${typeLabel} cadastrada!*\n\n` +
+    `${emoji} *${label} cadastrada!*\n\n` +
     `💵 ${formatCurrency(parsed.amount)}\n` +
     `🏷 ${parsed.category}\n` +
     `📝 ${parsed.description}` +
     splitInfo +
     confidenceNote;
 
-  if (createdId) {
-    await sendWithKeyboard(chatId, successText, afterTransactionKeyboard(createdId));
-  } else {
-    await sendTelegramMessage(chatId, successText);
-  }
+  const keyboard = createdId
+    ? (parsed.type === "expense" ? afterExpenseKeyboard(createdId) : afterIncomeKeyboard(createdId))
+    : emptyKeyboard;
+
+  await sendWithKeyboard(chatId, successText, keyboard);
 }
 
-// ── resolveCategoryId ─────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────
 
 async function resolveCategoryId(
   categoryName: string,
   coupleId: string | null,
   type: "income" | "expense"
 ): Promise<string | null> {
-  const where = {
-    name: { equals: categoryName },
-    type: { in: [type, "both"] },
-    OR: [
-      ...(coupleId ? [{ coupleId }] : []),
-      { coupleId: null, userId: null },
-    ],
-  };
-
-  const category = await db.category.findFirst({ where, select: { id: true } });
+  const category = await db.category.findFirst({
+    where: {
+      name: { equals: categoryName },
+      type: { in: [type, "both"] },
+      OR: [
+        ...(coupleId ? [{ coupleId }] : []),
+        { coupleId: null, userId: null },
+      ],
+    },
+    select: { id: true },
+  });
   return category?.id ?? null;
 }
 
-// ── isDeleteIntent ────────────────────────────────────────────────────────
+// Extrai valor numérico de texto — trata formatos BR e internacionais
+function parseAmount(text: string): number | null {
+  // Remove símbolo de moeda e a palavra "reais"
+  let clean = text
+    .replace(/[Rr]\$\s*/g, "")
+    .replace(/\s+reais?\s*$/i, "")
+    .trim();
+
+  // Formato brasileiro com milhar: 1.500,00
+  if (/^\d{1,3}(\.\d{3})+(,\d{1,2})?$/.test(clean)) {
+    return parseFloat(clean.replace(/\./g, "").replace(",", "."));
+  }
+
+  // Decimal com vírgula: 45,50
+  if (/^\d+(,\d{1,2})$/.test(clean)) {
+    return parseFloat(clean.replace(",", "."));
+  }
+
+  // Decimal simples: 45 ou 45.50
+  if (/^\d+(\.\d{1,2})?$/.test(clean)) {
+    const n = parseFloat(clean);
+    return isNaN(n) || n <= 0 ? null : n;
+  }
+
+  return null;
+}
 
 function isDeleteIntent(text: string): boolean {
   const lower = text.toLowerCase();
@@ -576,35 +903,14 @@ function isDeleteIntent(text: string): boolean {
   return keywords.some((k) => lower.includes(k));
 }
 
-// ── handleDesfazer ────────────────────────────────────────────────────────
-// Mostra diálogo de confirmação em vez de deletar imediatamente.
-
-async function handleDesfazer(chatId: number, telegramUserId: number): Promise<void> {
-  const user = await db.user.findUnique({
-    where: { telegramId: String(telegramUserId) },
-    select: { id: true },
-  });
-
-  if (!user) {
-    await sendTelegramMessage(chatId, `🔗 Você ainda não vinculou sua conta.`);
-    return;
-  }
-
-  const last = await db.transaction.findFirst({
-    where: { userId: user.id, source: "telegram" },
-    orderBy: { createdAt: "desc" },
-    select: { id: true, description: true, amount: true, type: true },
-  });
-
-  if (!last) {
-    await sendTelegramMessage(chatId, `❌ Nenhuma transação recente para desfazer.`);
-    return;
-  }
-
-  const emoji = last.type === "expense" ? "💸" : "💰";
-  const confirmText =
-    `⚠️ *Deseja remover esta transação?*\n\n` +
-    `${emoji} ${formatCurrency(last.amount)} — ${last.description}`;
-
-  await sendWithKeyboard(chatId, confirmText, confirmDeleteKeyboard(last.id));
+// Emoji por categoria — usado no resumo e nas notificações
+function categoryEmoji(name: string): string {
+  const map: Record<string, string> = {
+    "Alimentação": "🍔", "Supermercado": "🛒", "Transporte": "🚗",
+    "Moradia": "🏠", "Saúde": "💊", "Educação": "📚",
+    "Lazer": "🎮", "Roupas": "👗", "Streaming": "📺",
+    "Outros": "📦", "Salário": "💼", "Freelance": "💻",
+    "Investimentos": "📈",
+  };
+  return map[name] ?? "💰";
 }

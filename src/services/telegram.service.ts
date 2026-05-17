@@ -2,6 +2,7 @@
 // Não contém lógica de negócio — só chamadas HTTP.
 
 import type { InlineKeyboardMarkup } from "@/types/telegram";
+import type { ReplyKeyboard } from "@/services/telegram-menus";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const API_BASE = `https://api.telegram.org/bot${BOT_TOKEN}`;
@@ -15,8 +16,7 @@ function hasToken(): boolean {
 }
 
 // ── sendMessage ───────────────────────────────────────────────────────────
-// parse_mode = "Markdown" permite *negrito* e `código` nas respostas.
-// Em caso de erro de Markdown tenta sem formatação.
+// parse_mode = "Markdown" com fallback sem formatação.
 
 export async function sendTelegramMessage(
   chatId: number,
@@ -42,8 +42,37 @@ export async function sendTelegramMessage(
   }
 }
 
+// ── sendWithPersistentMenu ────────────────────────────────────────────────
+// Envia mensagem de texto junto com o menu ReplyKeyboard persistente.
+// Usar após /start e após ações importantes para garantir que o menu apareça.
+
+export async function sendWithPersistentMenu(
+  chatId: number,
+  text: string,
+  menu: ReplyKeyboard
+): Promise<void> {
+  if (!hasToken()) return;
+
+  const res = await fetch(`${API_BASE}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text,
+      parse_mode: "Markdown",
+      reply_markup: menu,
+    }),
+  });
+
+  if (!res.ok) {
+    console.error("[Telegram] sendWithPersistentMenu falhou:", await res.text());
+    // Fallback: envia sem o menu
+    await sendTelegramMessage(chatId, text);
+  }
+}
+
 // ── sendWithKeyboard ──────────────────────────────────────────────────────
-// Envia mensagem com botões inline. Retorna o message_id ou undefined.
+// Envia mensagem com InlineKeyboard. Retorna o message_id ou undefined.
 
 export async function sendWithKeyboard(
   chatId: number,
@@ -103,8 +132,8 @@ export async function editMessageText(
 }
 
 // ── answerCallbackQuery ───────────────────────────────────────────────────
-// Obrigatório após receber um callback_query: remove o "loading" no botão.
-// text opcional aparece como toast no celular do usuário.
+// Obrigatório após receber um callback_query — remove o "loading" no botão.
+// text opcional aparece como toast de ~2s no celular do usuário.
 
 export async function answerCallbackQuery(
   callbackQueryId: string,
@@ -119,8 +148,30 @@ export async function answerCallbackQuery(
   });
 }
 
-// ── registerWebhook ───────────────────────────────────────────────────────
-// Chamado uma vez durante o deploy (ou manualmente via script).
+// ── registerBotCommands ───────────────────────────────────────────────────
+// Registra os comandos no menu "/" do Telegram (aparecem como sugestões).
+// Chamado uma vez no setWebhook e também no /start.
+
+export async function registerBotCommands(): Promise<void> {
+  if (!BOT_TOKEN) return;
+
+  await fetch(`${API_BASE}/setMyCommands`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      commands: [
+        { command: "start", description: "Boas-vindas e menu principal" },
+        { command: "resumo", description: "Resumo de gastos do mês" },
+        { command: "ultimas", description: "Últimas transações" },
+        { command: "desfazer", description: "Desfazer última transação" },
+        { command: "config", description: "Configurações" },
+        { command: "ajuda", description: "Ajuda e exemplos" },
+      ],
+    }),
+  });
+}
+
+// ── registerTelegramWebhook ───────────────────────────────────────────────
 
 export async function registerTelegramWebhook(webhookUrl: string): Promise<void> {
   if (!BOT_TOKEN) throw new Error("TELEGRAM_BOT_TOKEN não definido");
@@ -137,5 +188,8 @@ export async function registerTelegramWebhook(webhookUrl: string): Promise<void>
 
   const data = await res.json() as { ok: boolean; description?: string };
   if (!data.ok) throw new Error(`setWebhook falhou: ${data.description}`);
-  console.log("[Telegram] Webhook registrado:", webhookUrl);
+
+  // Registra comandos junto com o webhook
+  await registerBotCommands();
+  console.log("[Telegram] Webhook e comandos registrados:", webhookUrl);
 }
