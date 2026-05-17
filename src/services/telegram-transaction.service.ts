@@ -91,7 +91,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
   if (text.startsWith("/ajuda") || text.startsWith("/help")) { await handleHelp(chatId); return; }
   if (text.startsWith("/config")) { await handleConfig(chatId); return; }
   if (text.startsWith("/resumo")) { await handleResumo(chatId, telegramUserId); return; }
-  if (text.startsWith("/ultimas")) { await handleUltimas(chatId, telegramUserId, 1); return; }
+  if (text.startsWith("/ultimas")) { await handleGerenciar(chatId, telegramUserId, 1); return; }
   if (text.startsWith("/gerenciar")) { await handleGerenciar(chatId, telegramUserId, 1); return; }
   if (text.startsWith("/vincular")) {
     const token = text.split(" ")[1]?.toUpperCase();
@@ -112,7 +112,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
   if (text === MENU_BUTTONS.EXPENSE) { await handleAddExpense(chatId, telegramUserId); return; }
   if (text === MENU_BUTTONS.INCOME) { await handleAddIncome(chatId, telegramUserId); return; }
   if (text === MENU_BUTTONS.SUMMARY) { await handleResumo(chatId, telegramUserId); return; }
-  if (text === MENU_BUTTONS.LATEST) { await handleUltimas(chatId, telegramUserId, 1); return; }
+  if (text === MENU_BUTTONS.LATEST) { await handleGerenciar(chatId, telegramUserId, 1); return; }
   if (text === MENU_BUTTONS.CONFIG) { await handleConfig(chatId); return; }
   if (text === MENU_BUTTONS.HELP) { await handleHelp(chatId); return; }
 
@@ -187,9 +187,12 @@ async function callbackRouter(
       if (messageId) {
         await editMessageText(chatId, messageId, `✋ *Operação cancelada.*\n\nA transação foi mantida.`, emptyKeyboard);
       }
-      // Limpa também qualquer estado WAITING_AMOUNT ativo
+      // Limpa apenas estado WAITING_AMOUNT (não apaga WAITING_EDIT_AMOUNT de outro fluxo)
       const user = await db.user.findUnique({ where: { telegramId: String(telegramUserId) }, select: { id: true } });
-      if (user) await clearState(user.id);
+      if (user) {
+        const st = await getState(user.id);
+        if (st?.state === ConversationState.WAITING_AMOUNT) await clearState(user.id);
+      }
     }
     return;
   }
@@ -300,8 +303,14 @@ async function callbackRouter(
 
     if (action === "edit") {
       const tx = await db.transaction.findFirst({
-        where: { id: param, userId: user.id },
-        select: { id: true, description: true, amount: true, type: true, category: { select: { name: true } } },
+        where: {
+          id: param,
+          OR: [
+            { userId: user.id },
+            ...(user.coupleId ? [{ coupleId: user.coupleId }] : []),
+          ],
+        },
+        select: { id: true, userId: true, description: true, amount: true, type: true, category: { select: { name: true } } },
       });
       if (!tx) {
         await answerCallbackQuery(cq.id, "❌ Transação não encontrada");
@@ -325,9 +334,16 @@ async function callbackRouter(
     }
 
     if (action === "delete") {
+      // Busca a transação verificando: própria OU do casal
       const tx = await db.transaction.findFirst({
-        where: { id: param, userId: user.id },
-        select: { id: true, description: true, amount: true, type: true },
+        where: {
+          id: param,
+          OR: [
+            { userId: user.id },
+            ...(user.coupleId ? [{ coupleId: user.coupleId }] : []),
+          ],
+        },
+        select: { id: true, userId: true, description: true, amount: true, type: true },
       });
       if (!tx) {
         await answerCallbackQuery(cq.id, "❌ Transação não encontrada");
@@ -335,9 +351,11 @@ async function callbackRouter(
       }
       await answerCallbackQuery(cq.id);
       const emoji = tx.type === "expense" ? "💸" : "💰";
+      const isPartner = tx.userId !== user.id;
       const confirmText =
         `⚠️ *Confirmar exclusão?*\n\n` +
-        `${emoji} ${formatCurrency(tx.amount)} — ${tx.description}`;
+        `${emoji} ${formatCurrency(tx.amount)} — ${tx.description}` +
+        (isPartner ? `\n\n_Transação do seu parceiro_` : "");
       if (messageId) {
         await editMessageText(chatId, messageId, confirmText, confirmTxDeleteKeyboard(tx.id));
       } else {
@@ -347,9 +365,16 @@ async function callbackRouter(
     }
 
     if (action === "confirmdelete") {
+      // Busca a transação verificando: própria OU do casal
       const tx = await db.transaction.findFirst({
-        where: { id: param, userId: user.id },
-        select: { id: true, description: true, amount: true, type: true },
+        where: {
+          id: param,
+          OR: [
+            { userId: user.id },
+            ...(user.coupleId ? [{ coupleId: user.coupleId }] : []),
+          ],
+        },
+        select: { id: true, userId: true, description: true, amount: true, type: true },
       });
       if (!tx) {
         await answerCallbackQuery(cq.id, "❌ Não encontrada");
@@ -357,15 +382,19 @@ async function callbackRouter(
         return;
       }
       try {
-        await deleteTransaction(tx.id, user.id);
+        // Passa o userId real da transação — deleteTransaction valida por userId
+        await deleteTransaction(tx.id, tx.userId);
         const emoji = tx.type === "expense" ? "💸" : "💰";
         await answerCallbackQuery(cq.id, "✅ Excluída!");
         const doneText = `✅ *Transação excluída!*\n\n${emoji} ${formatCurrency(tx.amount)} — ${tx.description}`;
         if (messageId) {
+          // Mostra confirmação e depois atualiza a lista na mesma mensagem
           await editMessageText(chatId, messageId, doneText, emptyKeyboard);
         } else {
           await sendTelegramMessage(chatId, doneText);
         }
+        // Envia a lista gerenciável atualizada como nova mensagem
+        await sendGerenciarPage(chatId, user.id, user.coupleId, 1);
       } catch {
         await answerCallbackQuery(cq.id, "❌ Erro ao excluir");
         if (messageId) await editMessageText(chatId, messageId, `❌ Não foi possível excluir.`, emptyKeyboard);
@@ -547,9 +576,12 @@ async function handleEditAmountFromState(
 
   await clearState(userId);
 
-  const tx = await db.transaction.findFirst({
-    where: { id: txId, userId },
-    select: { id: true, description: true, amount: true, type: true, category: { select: { name: true } } },
+  // Busca a transação sem restringir por userId — o acesso já foi validado
+  // ao salvar o estado (tx:edit verifica coupleId). Passa userId real do dono
+  // para o service (que valida internamente por userId).
+  const tx = await db.transaction.findUnique({
+    where: { id: txId },
+    select: { id: true, userId: true, description: true, amount: true, type: true, category: { select: { name: true } } },
   });
 
   if (!tx) {
@@ -558,7 +590,7 @@ async function handleEditAmountFromState(
   }
 
   try {
-    await updateTransactionAmount(txId, userId, amount);
+    await updateTransactionAmount(txId, tx.userId, amount);
     const emoji = tx.type === "expense" ? "💸" : "💰";
     const catName = tx.category?.name ?? "";
     await sendWithKeyboard(
