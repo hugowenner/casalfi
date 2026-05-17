@@ -183,6 +183,14 @@ async function callbackRouter(
   const messageId = cq.message?.message_id;
   const telegramUserId = cq.from.id;
 
+  console.log("🎯 CALLBACK RECEBIDO:", {
+    data,
+    id: cq.id,
+    chatId,
+    messageId,
+    telegramUserId,
+  });
+
   // Sempre responde ao callback para remover o loading no botão
   // O texto aparece como toast de ~2s no celular
   const [ns, action, param] = data.split(":");
