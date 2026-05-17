@@ -8,7 +8,7 @@
 import { db } from "@/lib/db";
 import { sendTelegramMessage } from "@/services/telegram.service";
 import { parseTransactionFromText } from "@/services/ai-transaction-parser.service";
-import { createTransaction } from "@/services/transaction.service";
+import { createTransaction, deleteTransaction } from "@/services/transaction.service";
 import { formatCurrency } from "@/lib/format";
 import { format } from "date-fns";
 import type { TelegramUpdate } from "@/types/telegram";
@@ -54,6 +54,11 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     const parts = text.split(" ");
     const token = parts[1]?.toUpperCase();
     await handleVincular(chatId, telegramUserId, token);
+    return;
+  }
+
+  if (text.startsWith("/desfazer") || isDeleteIntent(text)) {
+    await handleDesfazer(chatId, telegramUserId);
     return;
   }
 
@@ -235,8 +240,13 @@ async function handleTransactionMessage(
   };
 
   try {
-    // 5. Delega para o service existente — reutiliza toda a lógica de saldo/cartão
-    await createTransaction(user.id, user.coupleId, transactionInput);
+    // 5. Delega para o service existente com metadados de origem
+    await createTransaction(user.id, user.coupleId, transactionInput, {
+      source: "telegram",
+      rawInput: text,
+      aiCategory: parsed.category,
+      aiConfidence: parsed.confidence,
+    });
   } catch (err) {
     console.error("[Telegram] Erro ao criar transação:", err);
     await sendTelegramMessage(
@@ -286,4 +296,52 @@ async function resolveCategoryId(
 
   const category = await db.category.findFirst({ where, select: { id: true } });
   return category?.id ?? null;
+}
+
+// ── isDeleteIntent ────────────────────────────────────────────────────────
+// Detecta por palavras-chave se o usuário quer remover/desfazer algo.
+// Evita chamar a IA desnecessariamente para esse caso simples.
+
+function isDeleteIntent(text: string): boolean {
+  const lower = text.toLowerCase();
+  const keywords = ["remova", "remove", "apaga", "apague", "cancela", "cancele",
+    "desfaz", "desfazer", "deletar", "delete", "excluir", "exclua"];
+  return keywords.some((k) => lower.includes(k));
+}
+
+// ── handleDesfazer ────────────────────────────────────────────────────────
+// Remove a transação mais recente do usuário criada via Telegram.
+
+async function handleDesfazer(chatId: number, telegramUserId: number): Promise<void> {
+  const user = await db.user.findUnique({
+    where: { telegramId: String(telegramUserId) },
+    select: { id: true },
+  });
+
+  if (!user) {
+    await sendTelegramMessage(chatId, `🔗 Você ainda não vinculou sua conta.`);
+    return;
+  }
+
+  const last = await db.transaction.findFirst({
+    where: { userId: user.id, source: "telegram" },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, description: true, amount: true, type: true },
+  });
+
+  if (!last) {
+    await sendTelegramMessage(chatId, `❌ Nenhuma transação recente para desfazer.`);
+    return;
+  }
+
+  try {
+    await deleteTransaction(last.id, user.id);
+    const emoji = last.type === "expense" ? "💸" : "💰";
+    await sendTelegramMessage(
+      chatId,
+      `✅ *Transação removida!*\n\n${emoji} ${formatCurrency(last.amount)} — ${last.description}`
+    );
+  } catch {
+    await sendTelegramMessage(chatId, `❌ Não foi possível remover a transação.`);
+  }
 }

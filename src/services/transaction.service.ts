@@ -12,10 +12,18 @@ import type {
 
 // ── CRUD ──────────────────────────────────────────────────────────────────
 
+interface TransactionMeta {
+  source?: string;
+  rawInput?: string;
+  aiCategory?: string;
+  aiConfidence?: number;
+}
+
 export async function createTransaction(
   userId: string,
   coupleId: string | null,
-  input: TransactionInput
+  input: TransactionInput,
+  meta?: TransactionMeta
 ): Promise<TransactionWithRelations> {
   // Interpretar a data como horário local (meio-dia) para evitar deslocamento de fuso
   const [y, mo, d] = input.date.split("-").map(Number);
@@ -36,6 +44,10 @@ export async function createTransaction(
         cardId: input.cardId,
         splitType: input.splitType,
         paidByUserId,
+        source: meta?.source ?? "manual",
+        rawInput: meta?.rawInput,
+        aiCategory: meta?.aiCategory,
+        aiConfidence: meta?.aiConfidence,
         notes: input.notes,
         isRecurring: input.isRecurring,
         recurringPeriod: input.recurringPeriod,

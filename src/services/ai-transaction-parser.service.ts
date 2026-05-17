@@ -43,7 +43,8 @@ CATEGORIAS DE RECEITA (use exatamente este nome):
 
 REGRAS DE NEGÓCIO:
 - "dividido", "dividir", "50/50", "metade" → splitType = "equal"
-- Valores podem vir como: "80 reais", "R$80", "oitenta reais", "80,50"
+- Valores podem vir como: "80 reais", "R$80", "oitenta reais", "80,50", "gastei 80", "50 no mercado"
+- Qualquer número isolado após "gastei", "paguei", "comprei", "recebi" é o valor em reais
 - Confiance alto (>0.85): valor e tipo claros. Baixo (<0.5): ambíguo.
 - Se não conseguir extrair o valor, retorne amount: null
 - description deve ser em português, curta e informativa
