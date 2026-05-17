@@ -1,17 +1,24 @@
 import type { Metadata } from "next";
 import { getSession } from "@/lib/auth";
+import { db } from "@/lib/db";
 import { logoutAction } from "@/actions/auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { getInitials } from "@/lib/format";
 import { LogOut } from "lucide-react";
+import { TelegramConnect } from "@/components/features/settings/telegram-connect";
 
 export const metadata: Metadata = { title: "Configurações" };
 
 export default async function SettingsPage() {
   const session = await getSession();
   if (!session) return null;
+
+  const user = await db.user.findUnique({
+    where: { id: session.userId },
+    select: { telegramId: true },
+  });
 
   return (
     <div className="px-4 py-6 md:px-8 space-y-6 max-w-lg mx-auto">
@@ -33,6 +40,8 @@ export default async function SettingsPage() {
           </div>
         </CardContent>
       </Card>
+
+      <TelegramConnect isLinked={!!user?.telegramId} />
 
       <Card className="border-border/50">
         <CardContent className="p-4">
