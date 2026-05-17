@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { generateTelegramLinkTokenAction, unlinkTelegramAction } from "@/actions/telegram";
-import { MessageCircle, Link, LinkOff, Copy, Check } from "lucide-react";
+import { MessageCircle, Link, Link2Off, Copy, Check } from "lucide-react";
 
 interface TelegramConnectProps {
   isLinked: boolean;
@@ -71,7 +71,7 @@ export function TelegramConnect({ isLinked }: TelegramConnectProps) {
             onClick={handleUnlink}
             disabled={isPending}
           >
-            <LinkOff className="h-3 w-3" />
+            <Link2Off className="h-3 w-3" />
             Desvincular Telegram
           </Button>
         </CardContent>
