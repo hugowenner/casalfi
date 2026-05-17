@@ -60,8 +60,6 @@ EXEMPLOS:
 export async function parseTransactionFromText(
   text: string
 ): Promise<ParsedTransaction | null> {
-  console.log("🧠 AI PARSER ENTERED:", { text });
-
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
     console.error("[AI Parser] OPENROUTER_API_KEY não definido");

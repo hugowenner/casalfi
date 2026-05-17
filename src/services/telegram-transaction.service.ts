@@ -76,12 +76,6 @@ const CATEGORY_DEFAULT_DESCRIPTION: Record<string, string> = {
 // ── handleTelegramUpdate ──────────────────────────────────────────────────
 
 export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void> {
-  console.log("🧭 ENTRY POINT UPDATE:", {
-    type: update.callback_query ? "callback" : "message",
-    text: update.message?.text,
-    callbackData: update.callback_query?.data,
-  });
-
   if (update.callback_query) {
     await callbackRouter(update.callback_query);
     return;
@@ -182,14 +176,6 @@ async function callbackRouter(
   const chatId = cq.message?.chat.id;
   const messageId = cq.message?.message_id;
   const telegramUserId = cq.from.id;
-
-  console.log("🎯 CALLBACK RECEBIDO:", {
-    data,
-    id: cq.id,
-    chatId,
-    messageId,
-    telegramUserId,
-  });
 
   // Sempre responde ao callback para remover o loading no botão
   // O texto aparece como toast de ~2s no celular

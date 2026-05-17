@@ -58,7 +58,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const label = update.callback_query
     ? `callback:${update.callback_query.data}`
     : update.message?.text;
-  console.log("🧾 UPDATE ID:", update.update_id, "| label:", label, "| type:", update.callback_query ? "callback" : "message");
+  console.log("[Telegram Webhook] Update recebido:", update.update_id, label);
 
   try {
     await handleTelegramUpdate(update);
