@@ -7,7 +7,11 @@ import { DashboardView } from "@/components/features/dashboard/dashboard-view";
 
 export const metadata: Metadata = { title: "Dashboard" };
 
-export default async function DashboardPage() {
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ month?: string }>;
+}) {
   const session = await getSession();
   if (!session) return null;
 
@@ -16,7 +20,9 @@ export default async function DashboardPage() {
     select: { id: true, name: true, avatar: true, coupleId: true },
   });
 
-  const month = getCurrentMonth();
+  const params = await searchParams;
+  const raw = params?.month ?? "";
+  const month = /^\d{4}-\d{2}$/.test(raw) ? raw : getCurrentMonth();
 
   // Dados pessoais (só minhas transações)
   const personalData = await getDashboardData(session.userId, null, month);

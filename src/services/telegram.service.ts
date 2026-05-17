@@ -93,8 +93,18 @@ export async function sendWithKeyboard(
   });
 
   if (!res.ok) {
-    console.error("[Telegram] sendWithKeyboard falhou:", await res.text());
-    return;
+    // Fallback sem parse_mode — preserva o teclado mesmo com chars especiais na descrição
+    const fallback = await fetch(`${API_BASE}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text, reply_markup: keyboard }),
+    });
+    if (!fallback.ok) {
+      console.error("[Telegram] sendWithKeyboard falhou:", await fallback.text());
+      return;
+    }
+    const fd = await fallback.json() as { ok: boolean; result?: { message_id: number } };
+    return fd.result?.message_id;
   }
 
   const data = await res.json() as { ok: boolean; result?: { message_id: number } };
@@ -127,7 +137,17 @@ export async function editMessageText(
   });
 
   if (!res.ok) {
-    console.error("[Telegram] editMessageText falhou:", await res.text());
+    // Fallback sem parse_mode — preserva o teclado mesmo com chars especiais
+    const bodyFallback = { ...body };
+    delete bodyFallback.parse_mode;
+    const fallback = await fetch(`${API_BASE}/editMessageText`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(bodyFallback),
+    });
+    if (!fallback.ok) {
+      console.error("[Telegram] editMessageText falhou:", await fallback.text());
+    }
   }
 }
 
@@ -164,6 +184,7 @@ export async function registerBotCommands(): Promise<void> {
         { command: "resumo", description: "Resumo de gastos do mês" },
         { command: "ultimas", description: "Últimas transações" },
         { command: "desfazer", description: "Desfazer última transação" },
+        { command: "gerenciar", description: "Editar ou excluir transações" },
         { command: "config", description: "Configurações" },
         { command: "ajuda", description: "Ajuda e exemplos" },
       ],
