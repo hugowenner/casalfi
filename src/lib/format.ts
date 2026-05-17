@@ -1,4 +1,4 @@
-import { format, formatDistanceToNow, isToday, isYesterday } from "date-fns";
+import { format, formatDistanceToNow, isToday, isYesterday, parseISO } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
 // ── Moeda ─────────────────────────────────────────────────────────────────
@@ -47,7 +47,8 @@ export function formatDateShort(date: Date | string): string {
 }
 
 export function formatMonthYear(date: Date | string): string {
-  const d = typeof date === "string" ? new Date(date) : date;
+  // parseISO interpreta strings como horário local, evitando deslocamento de fuso
+  const d = typeof date === "string" ? parseISO(date) : date;
   return format(d, "MMMM 'de' yyyy", { locale: ptBR });
 }
 
