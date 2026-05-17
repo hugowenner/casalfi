@@ -23,6 +23,7 @@ model User {
   telegramId        String?   @unique
   telegramLinkToken String?   @unique
   telegramLinkAt    DateTime?
+  telegramState     String?   // JSON: { state, category, type, expiresAt }
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
