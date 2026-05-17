@@ -31,7 +31,6 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
     body = await request.json();
   } catch {
-    // Body malformado — ignorar silenciosamente
     return NextResponse.json({ ok: true });
   }
 
@@ -49,7 +48,6 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ ok: true });
   }
 
-  // Controla o tamanho do Set (evita vazamento de memória)
   if (processedUpdateIds.size >= MAX_CACHE_SIZE) {
     const first = processedUpdateIds.values().next().value;
     if (first !== undefined) processedUpdateIds.delete(first);
@@ -57,10 +55,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   processedUpdateIds.add(update.update_id);
 
   // ── 4. Processar com await — Vercel encerra a função após o response ──────
-  // Fire-and-forget não funciona em serverless: o processo é congelado após
-  // enviar a resposta. Usamos await; o Claude Haiku responde em ~1-2s,
-  // bem dentro do timeout de 5s do Telegram.
-  console.log("[Telegram Webhook] Update recebido:", update.update_id, update.message?.text);
+  const label = update.callback_query
+    ? `callback:${update.callback_query.data}`
+    : update.message?.text;
+  console.log("[Telegram Webhook] Update recebido:", update.update_id, label);
+
   try {
     await handleTelegramUpdate(update);
   } catch (err) {
