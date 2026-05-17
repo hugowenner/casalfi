@@ -81,6 +81,17 @@ export async function sendWithKeyboard(
 ): Promise<number | undefined> {
   if (!hasToken()) return;
 
+  console.log("📦 FINAL MESSAGE PAYLOAD:", {
+    chatId,
+    textPreview: text.slice(0, 50),
+    keyboard: JSON.stringify(keyboard),
+  });
+  console.log("🚀 SENDING TO TELEGRAM:", {
+    hasReplyMarkup: !!keyboard,
+    rowCount: keyboard.inline_keyboard.length,
+    replyMarkup: keyboard,
+  });
+
   const res = await fetch(`${API_BASE}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -129,6 +140,18 @@ export async function editMessageText(
     parse_mode: "Markdown",
   };
   if (keyboard) body.reply_markup = keyboard;
+
+  console.log("📦 FINAL MESSAGE PAYLOAD (edit):", {
+    chatId,
+    messageId,
+    textPreview: text.slice(0, 50),
+    keyboard: JSON.stringify(keyboard),
+  });
+  console.log("🚀 SENDING TO TELEGRAM (edit):", {
+    hasReplyMarkup: !!keyboard,
+    rowCount: keyboard?.inline_keyboard.length ?? 0,
+    replyMarkup: keyboard,
+  });
 
   const res = await fetch(`${API_BASE}/editMessageText`, {
     method: "POST",
