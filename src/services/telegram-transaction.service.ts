@@ -24,7 +24,6 @@ import {
   cancelFlowKeyboard,
   expenseCategoryKeyboard,
   incomeCategoryKeyboard,
-  paginationKeyboard,
   configMenuKeyboard,
   txListKeyboard,
   confirmTxDeleteKeyboard,
@@ -39,6 +38,16 @@ import {
 } from "@/services/telegram-state.service";
 import { formatCurrency } from "@/lib/format";
 import { format, startOfMonth, endOfMonth, parseISO } from "date-fns";
+
+// Escapa chars especiais do Markdown v1 do Telegram (_  *  `  [)
+function escapeMd(s: string): string {
+  return s.replace(/[_*`[]/g, "\\$&");
+}
+
+// Normaliza texto de botão (remove variation selectors U+FE0F) para comparação segura
+function norm(s: string): string {
+  return s.replace(/️/g, "").trim();
+}
 import { ptBR } from "date-fns/locale";
 import type { TelegramUpdate } from "@/types/telegram";
 import type { TransactionInput } from "@/validators/transaction";
@@ -108,13 +117,15 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
   }
 
   // ── Botões do menu persistente ────────────────────────────────────────
+  // norm() remove variation selectors (U+FE0F) que alguns clientes Telegram inserem nos emojis
 
-  if (text === MENU_BUTTONS.EXPENSE) { await handleAddExpense(chatId, telegramUserId); return; }
-  if (text === MENU_BUTTONS.INCOME) { await handleAddIncome(chatId, telegramUserId); return; }
-  if (text === MENU_BUTTONS.SUMMARY) { await handleResumo(chatId, telegramUserId); return; }
-  if (text === MENU_BUTTONS.LATEST) { await handleGerenciar(chatId, telegramUserId, 1); return; }
-  if (text === MENU_BUTTONS.CONFIG) { await handleConfig(chatId); return; }
-  if (text === MENU_BUTTONS.HELP) { await handleHelp(chatId); return; }
+  const normText = norm(text);
+  if (normText === norm(MENU_BUTTONS.EXPENSE)) { await handleAddExpense(chatId, telegramUserId); return; }
+  if (normText === norm(MENU_BUTTONS.INCOME)) { await handleAddIncome(chatId, telegramUserId); return; }
+  if (normText === norm(MENU_BUTTONS.SUMMARY)) { await handleResumo(chatId, telegramUserId); return; }
+  if (normText === norm(MENU_BUTTONS.LATEST)) { await handleGerenciar(chatId, telegramUserId, 1); return; }
+  if (normText === norm(MENU_BUTTONS.CONFIG)) { await handleConfig(chatId); return; }
+  if (normText === norm(MENU_BUTTONS.HELP)) { await handleHelp(chatId); return; }
 
   // ── Verificar estado da conversa ──────────────────────────────────────
   // Se o usuário selecionou uma categoria e está aguardando o valor,
@@ -231,7 +242,7 @@ async function callbackRouter(
     return;
   }
 
-  // ── namespace: latest (paginação) ─────────────────────────────────────
+  // ── namespace: latest (paginação — redireciona para gerenciar com botões) ─
   if (ns === "latest") {
     await answerCallbackQuery(cq.id);
     const page = parseInt(param ?? "1", 10) || 1;
@@ -240,7 +251,9 @@ async function callbackRouter(
       select: { id: true, coupleId: true },
     });
     if (!user) return;
-    await sendUltimasPage(chatId, user.id, user.coupleId, page, messageId);
+    // Usa sendGerenciarPage para que botões ✏️/🗑 sempre apareçam,
+    // mesmo em mensagens antigas que usavam latest:page:N
+    await sendGerenciarPage(chatId, user.id, user.coupleId, page, messageId);
     return;
   }
 
@@ -322,8 +335,8 @@ async function callbackRouter(
       const catName = tx.category?.name ?? "";
       const prompt =
         `✏️ *Editar valor*\n\n` +
-        `${emoji} ${formatCurrency(tx.amount)}${catName ? ` — ${catName}` : ""}\n` +
-        `📝 ${tx.description}\n\n` +
+        `${emoji} ${formatCurrency(tx.amount)}${catName ? ` — ${escapeMd(catName)}` : ""}\n` +
+        `📝 ${escapeMd(tx.description)}\n\n` +
         `Qual o novo valor?`;
       if (messageId) {
         await editMessageText(chatId, messageId, prompt, cancelFlowKeyboard());
@@ -354,7 +367,7 @@ async function callbackRouter(
       const isPartner = tx.userId !== user.id;
       const confirmText =
         `⚠️ *Confirmar exclusão?*\n\n` +
-        `${emoji} ${formatCurrency(tx.amount)} — ${tx.description}` +
+        `${emoji} ${formatCurrency(tx.amount)} — ${escapeMd(tx.description)}` +
         (isPartner ? `\n\n_Transação do seu parceiro_` : "");
       if (messageId) {
         await editMessageText(chatId, messageId, confirmText, confirmTxDeleteKeyboard(tx.id));
@@ -386,7 +399,7 @@ async function callbackRouter(
         await deleteTransaction(tx.id, tx.userId);
         const emoji = tx.type === "expense" ? "💸" : "💰";
         await answerCallbackQuery(cq.id, "✅ Excluída!");
-        const doneText = `✅ *Transação excluída!*\n\n${emoji} ${formatCurrency(tx.amount)} — ${tx.description}`;
+        const doneText = `✅ *Transação excluída!*\n\n${emoji} ${formatCurrency(tx.amount)} — ${escapeMd(tx.description)}`;
         if (messageId) {
           // Mostra confirmação e depois atualiza a lista na mesma mensagem
           await editMessageText(chatId, messageId, doneText, emptyKeyboard);
@@ -597,7 +610,7 @@ async function handleEditAmountFromState(
       chatId,
       `✅ *Valor atualizado!*\n\n` +
       `${emoji} ${formatCurrency(tx.amount)} → *${formatCurrency(amount)}*\n` +
-      `📝 ${tx.description}${catName ? `\n🏷 ${catName}` : ""}`,
+      `📝 ${escapeMd(tx.description)}${catName ? `\n🏷 ${escapeMd(catName)}` : ""}`,
       afterExpenseKeyboard(txId)
     );
   } catch (err) {
@@ -666,9 +679,9 @@ async function sendGerenciarPage(
   const lines = transactions.map((t, i) => {
     const emoji = t.type === "expense" ? "💸" : "💰";
     const dateStr = format(t.date, "dd/MM");
-    const cat = t.category?.name ? ` _${t.category.name}_` : "";
+    const cat = t.category?.name ? ` _${escapeMd(t.category.name)}_` : "";
     const mine = t.userId === userId ? "" : " 👫";
-    return `${i + 1}. ${emoji} ${dateStr} *${formatCurrency(t.amount)}*${cat} — ${t.description}${mine}`;
+    return `${i + 1}. ${emoji} ${dateStr} *${formatCurrency(t.amount)}*${cat} — ${escapeMd(t.description)}${mine}`;
   });
 
   const header = totalPages > 1
@@ -714,7 +727,7 @@ async function handleUndoConfirm(
   const emoji = tx.type === "expense" ? "💸" : "💰";
   const confirmText =
     `⚠️ *Deseja remover esta transação?*\n\n` +
-    `${emoji} ${formatCurrency(tx.amount)} — ${tx.description}`;
+    `${emoji} ${formatCurrency(tx.amount)} — ${escapeMd(tx.description)}`;
 
   if (messageId) {
     await editMessageText(chatId, messageId, confirmText, confirmDeleteKeyboard(tx.id));
@@ -753,7 +766,7 @@ async function handleUndoDo(
     await deleteTransaction(tx.id, user.id);
     const emoji = tx.type === "expense" ? "💸" : "💰";
     await answerCallbackQuery(callbackQueryId, "✅ Transação removida!");
-    const doneText = `✅ *Transação removida!*\n\n${emoji} ${formatCurrency(tx.amount)} — ${tx.description}`;
+    const doneText = `✅ *Transação removida!*\n\n${emoji} ${formatCurrency(tx.amount)} — ${escapeMd(tx.description)}`;
     if (messageId) {
       await editMessageText(chatId, messageId, doneText, emptyKeyboard);
     } else {
@@ -936,76 +949,7 @@ async function handleResumo(chatId: number, telegramUserId: number): Promise<voi
   );
 }
 
-// ── handleUltimas + paginação ─────────────────────────────────────────────
-
-async function handleUltimas(chatId: number, telegramUserId: number, page: number): Promise<void> {
-  const user = await db.user.findUnique({
-    where: { telegramId: String(telegramUserId) },
-    select: { id: true, coupleId: true },
-  });
-
-  if (!user) {
-    await sendTelegramMessage(chatId, `🔗 Você ainda não vinculou sua conta.`);
-    return;
-  }
-
-  await sendUltimasPage(chatId, user.id, user.coupleId, page);
-}
-
-async function sendUltimasPage(
-  chatId: number,
-  userId: string,
-  coupleId: string | null,
-  page: number,
-  editMessageId?: number
-): Promise<void> {
-  const where = {
-    OR: [{ userId }, ...(coupleId ? [{ coupleId }] : [])],
-  };
-
-  const [total, transactions] = await Promise.all([
-    db.transaction.count({ where }),
-    db.transaction.findMany({
-      where,
-      orderBy: { date: "desc" },
-      skip: (page - 1) * PAGE_SIZE,
-      take: PAGE_SIZE,
-      select: {
-        description: true,
-        amount: true,
-        type: true,
-        date: true,
-        category: { select: { name: true } },
-      },
-    }),
-  ]);
-
-  if (transactions.length === 0) {
-    await sendTelegramMessage(chatId, `📭 Nenhuma transação encontrada.`);
-    return;
-  }
-
-  const totalPages = Math.ceil(total / PAGE_SIZE);
-  const lines = transactions.map((t) => {
-    const emoji = t.type === "expense" ? "💸" : "💰";
-    const dateStr = format(t.date, "dd/MM");
-    const cat = t.category?.name ? ` _${t.category.name}_` : "";
-    return `${emoji} ${dateStr} *${formatCurrency(t.amount)}*${cat} — ${t.description}`;
-  });
-
-  const header = totalPages > 1
-    ? `📋 *Transações* (pág. ${page}/${totalPages}):\n\n`
-    : `📋 *Últimas transações:*\n\n`;
-
-  const text = header + lines.join("\n");
-  const keyboard = paginationKeyboard(page, totalPages);
-
-  if (editMessageId) {
-    await editMessageText(chatId, editMessageId, text, keyboard);
-  } else {
-    await sendWithKeyboard(chatId, text, keyboard);
-  }
-}
+// sendUltimasPage foi removido — toda paginação usa sendGerenciarPage (com botões ✏️/🗑)
 
 // ── handleDesfazer ────────────────────────────────────────────────────────
 
@@ -1034,7 +978,7 @@ async function handleDesfazer(chatId: number, telegramUserId: number): Promise<v
   const emoji = last.type === "expense" ? "💸" : "💰";
   await sendWithKeyboard(
     chatId,
-    `⚠️ *Deseja remover esta transação?*\n\n${emoji} ${formatCurrency(last.amount)} — ${last.description}`,
+    `⚠️ *Deseja remover esta transação?*\n\n${emoji} ${formatCurrency(last.amount)} — ${escapeMd(last.description)}`,
     confirmDeleteKeyboard(last.id)
   );
 }
@@ -1110,8 +1054,8 @@ async function handleTransactionMessage(
   const successText =
     `${emoji} *${label} cadastrada!*\n\n` +
     `💵 ${formatCurrency(parsed.amount)}\n` +
-    `🏷 ${parsed.category}\n` +
-    `📝 ${parsed.description}` +
+    `🏷 ${escapeMd(parsed.category)}\n` +
+    `📝 ${escapeMd(parsed.description)}` +
     splitInfo +
     confidenceNote;
 
