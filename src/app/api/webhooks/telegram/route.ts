@@ -22,11 +22,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const expectedSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
 
   if (!expectedSecret || incomingSecret !== expectedSecret) {
-    console.warn("[Telegram Webhook] Secret inválido.", {
-      envSet: !!expectedSecret,
-      envFirst8: expectedSecret?.substring(0, 8),
-      incomingFirst8: incomingSecret?.substring(0, 8),
-    });
+    console.warn("[Telegram Webhook] Secret inválido ou ausente");
     return NextResponse.json({ ok: true });
   }
 
