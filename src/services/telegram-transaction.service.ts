@@ -105,13 +105,18 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
   }
 
   // ── Botões do menu persistente ────────────────────────────────────────
+  // Normaliza variation selectors (U+FE0F) antes de comparar — alguns clientes
+  // Telegram enviam ⚙️ como ⚙ (sem o selector), quebrando a comparação exata.
 
-  if (text === MENU_BUTTONS.EXPENSE) { await handleAddExpense(chatId, telegramUserId); return; }
-  if (text === MENU_BUTTONS.INCOME) { await handleAddIncome(chatId, telegramUserId); return; }
-  if (text === MENU_BUTTONS.SUMMARY) { await handleResumo(chatId, telegramUserId); return; }
-  if (text === MENU_BUTTONS.LATEST) { await handleUltimas(chatId, telegramUserId, 1); return; }
-  if (text === MENU_BUTTONS.CONFIG) { await handleConfig(chatId); return; }
-  if (text === MENU_BUTTONS.HELP) { await handleHelp(chatId); return; }
+  const norm = (s: string) => s.replace(/️/g, "").trim();
+  const t = norm(text);
+
+  if (t === norm(MENU_BUTTONS.EXPENSE)) { await handleAddExpense(chatId, telegramUserId); return; }
+  if (t === norm(MENU_BUTTONS.INCOME)) { await handleAddIncome(chatId, telegramUserId); return; }
+  if (t === norm(MENU_BUTTONS.SUMMARY)) { await handleResumo(chatId, telegramUserId); return; }
+  if (t === norm(MENU_BUTTONS.LATEST)) { await handleUltimas(chatId, telegramUserId, 1); return; }
+  if (t === norm(MENU_BUTTONS.CONFIG)) { await handleConfig(chatId); return; }
+  if (t === norm(MENU_BUTTONS.HELP)) { await handleHelp(chatId); return; }
 
   // ── Verificar estado da conversa ──────────────────────────────────────
   // Se o usuário selecionou uma categoria e está aguardando o valor,
