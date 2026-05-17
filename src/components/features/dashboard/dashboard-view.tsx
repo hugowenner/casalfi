@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter, usePathname } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, Eye, EyeOff, User, Heart } from "lucide-react";
+import { Plus, Eye, EyeOff, User, Heart, ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StatsGrid } from "./stats-grid";
 import { SpendingChart } from "./spending-chart";
@@ -14,6 +15,7 @@ import { CoupleFeed } from "./couple-feed";
 import { AddTransactionDialog } from "@/components/features/transactions/add-transaction-dialog";
 import { formatMonthYear } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { format, addMonths, subMonths, parseISO, isFuture, startOfMonth } from "date-fns";
 import type { DashboardData, CoupleDashboardData } from "@/types";
 
 interface DashboardViewProps {
@@ -33,6 +35,8 @@ export function DashboardView({
   partnerName,
   month,
 }: DashboardViewProps) {
+  const router = useRouter();
+  const pathname = usePathname();
   const [showValues, setShowValues] = useState(true);
   const [addOpen, setAddOpen] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("personal");
@@ -40,6 +44,15 @@ export function DashboardView({
   const firstName = userName.split(" ")[0];
   const hasCouple = coupleData !== null;
   const isCouple = viewMode === "couple" && hasCouple;
+
+  const currentDate = parseISO(`${month}-01`);
+  const prevMonth = format(subMonths(currentDate, 1), "yyyy-MM");
+  const nextMonth = format(addMonths(currentDate, 1), "yyyy-MM");
+  const isNextFuture = isFuture(startOfMonth(addMonths(currentDate, 1)));
+
+  function navigate(target: string) {
+    router.push(`${pathname}?month=${target}`);
+  }
 
   return (
     <div className="px-4 py-6 md:px-8 space-y-6 max-w-5xl mx-auto">
@@ -51,7 +64,32 @@ export function DashboardView({
       >
         <div>
           <p className="text-sm text-muted-foreground">Olá, {firstName} 👋</p>
-          <h1 className="text-xl font-bold capitalize">{formatMonthYear(month + "-01")}</h1>
+          {/* Navegação de mês */}
+          <div className="flex items-center gap-1 mt-0.5">
+            <button
+              onClick={() => navigate(prevMonth)}
+              className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+              aria-label="Mês anterior"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <h1 className="text-xl font-bold capitalize min-w-[160px] text-center">
+              {formatMonthYear(month + "-01")}
+            </h1>
+            <button
+              onClick={() => !isNextFuture && navigate(nextMonth)}
+              disabled={isNextFuture}
+              className={cn(
+                "p-1 rounded-lg transition-colors",
+                isNextFuture
+                  ? "text-muted-foreground/30 cursor-not-allowed"
+                  : "text-muted-foreground hover:text-foreground hover:bg-secondary"
+              )}
+              aria-label="Próximo mês"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <Button
