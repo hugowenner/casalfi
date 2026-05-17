@@ -22,9 +22,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const expectedSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
 
   if (!expectedSecret || incomingSecret !== expectedSecret) {
-    // Não revelar por que rejeitamos — retornar 200 para não dar informação
-    // a atacantes sobre a existência do endpoint.
-    console.warn("[Telegram Webhook] Secret inválido ou ausente");
+    console.warn("[Telegram Webhook] Secret inválido.", {
+      envSet: !!expectedSecret,
+      envFirst8: expectedSecret?.substring(0, 8),
+      incomingFirst8: incomingSecret?.substring(0, 8),
+    });
     return NextResponse.json({ ok: true });
   }
 
