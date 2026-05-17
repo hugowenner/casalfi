@@ -172,12 +172,12 @@ export function TransactionsView({ initialTransactions, userId }: TransactionsVi
                           {tx.type === "income" ? "+" : "-"}{formatCurrency(tx.amount)}
                         </p>
 
-                        {/* Ação */}
+                        {/* Ação — sempre visível no mobile, aparece no hover em desktop */}
                         {tx.userId === userId && (
                           <button
                             onClick={() => handleDelete(tx.id)}
                             disabled={isPending && deletingId === tx.id}
-                            className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                            className="md:opacity-0 md:group-hover:opacity-100 transition-opacity p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 disabled:opacity-30"
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                           </button>
