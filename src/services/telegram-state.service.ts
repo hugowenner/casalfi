@@ -8,7 +8,8 @@ import { db } from "@/lib/db";
 
 export const ConversationState = {
   IDLE: "IDLE",
-  WAITING_AMOUNT: "WAITING_AMOUNT",     // Categoria escolhida, aguardando valor
+  WAITING_AMOUNT: "WAITING_AMOUNT",       // Categoria escolhida, aguardando valor
+  WAITING_EDIT_AMOUNT: "WAITING_EDIT_AMOUNT", // Transação selecionada, aguardando novo valor
 } as const;
 
 export type ConversationState = (typeof ConversationState)[keyof typeof ConversationState];
@@ -17,6 +18,7 @@ interface StateData {
   state: ConversationState;
   category?: string;
   transactionType?: "income" | "expense";
+  txId?: string;
   expiresAt: number;
 }
 
@@ -45,7 +47,7 @@ export async function getState(userId: string): Promise<StateData | null> {
 export async function setState(
   userId: string,
   state: ConversationState,
-  extra?: Partial<Pick<StateData, "category" | "transactionType">>
+  extra?: Partial<Pick<StateData, "category" | "transactionType" | "txId">>
 ): Promise<void> {
   const data: StateData = { state, expiresAt: Date.now() + TTL_MS, ...extra };
   await db.user.update({

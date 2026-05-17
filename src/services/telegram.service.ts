@@ -164,6 +164,7 @@ export async function registerBotCommands(): Promise<void> {
         { command: "resumo", description: "Resumo de gastos do mês" },
         { command: "ultimas", description: "Últimas transações" },
         { command: "desfazer", description: "Desfazer última transação" },
+        { command: "gerenciar", description: "Editar ou excluir transações" },
         { command: "config", description: "Configurações" },
         { command: "ajuda", description: "Ajuda e exemplos" },
       ],

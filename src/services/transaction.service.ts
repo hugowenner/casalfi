@@ -120,6 +120,38 @@ export async function deleteTransaction(
   });
 }
 
+export async function updateTransactionAmount(
+  id: string,
+  userId: string,
+  newAmount: number
+): Promise<void> {
+  const transaction = await db.transaction.findFirst({
+    where: { id, userId },
+  });
+  if (!transaction) throw new Error("Transação não encontrada");
+
+  const diff = newAmount - transaction.amount;
+
+  await db.$transaction(async (tx) => {
+    await tx.transaction.update({ where: { id }, data: { amount: newAmount } });
+
+    if (transaction.accountId && diff !== 0) {
+      const delta = transaction.type === "income" ? diff : -diff;
+      await tx.account.update({
+        where: { id: transaction.accountId },
+        data: { balance: { increment: delta } },
+      });
+    }
+
+    if (transaction.cardId && transaction.type === "expense" && diff !== 0) {
+      await tx.card.update({
+        where: { id: transaction.cardId },
+        data: { availableLimit: { increment: -diff } },
+      });
+    }
+  });
+}
+
 // ── LISTAGEM ──────────────────────────────────────────────────────────────
 
 export async function listTransactions(

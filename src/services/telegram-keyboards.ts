@@ -141,6 +141,40 @@ export function configMenuKeyboard(): InlineKeyboardMarkup {
   };
 }
 
+// ── Gerenciamento de transações ──────────────────────────────────────────
+//   tx:edit:txId         → inicia edição de valor
+//   tx:delete:txId       → pede confirmação de exclusão
+//   tx:confirmdelete:txId → confirma exclusão
+//   tx:canceldelete      → cancela exclusão
+//   tx:page:N            → navega para página N na lista gerenciável
+
+export function txListKeyboard(
+  txIds: string[],
+  page: number,
+  totalPages: number
+): InlineKeyboardMarkup {
+  const rows: { text: string; callback_data: string }[][] = txIds.map((id, i) => [
+    { text: `✏️ ${i + 1}`, callback_data: `tx:edit:${id}` },
+    { text: `🗑 ${i + 1}`, callback_data: `tx:delete:${id}` },
+  ]);
+
+  const nav: { text: string; callback_data: string }[] = [];
+  if (page > 1) nav.push({ text: "⬅️ Anterior", callback_data: `tx:page:${page - 1}` });
+  if (page < totalPages) nav.push({ text: "Próxima ➡️", callback_data: `tx:page:${page + 1}` });
+  if (nav.length) rows.push(nav);
+
+  return { inline_keyboard: rows };
+}
+
+export function confirmTxDeleteKeyboard(txId: string): InlineKeyboardMarkup {
+  return {
+    inline_keyboard: [[
+      { text: "✅ Excluir", callback_data: `tx:confirmdelete:${txId}` },
+      { text: "❌ Cancelar", callback_data: "tx:canceldelete" },
+    ]],
+  };
+}
+
 // ── Teclado vazio (remove botões de uma mensagem editada) ─────────────────
 
 export const emptyKeyboard: InlineKeyboardMarkup = { inline_keyboard: [] };

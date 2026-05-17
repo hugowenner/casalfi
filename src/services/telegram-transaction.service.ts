@@ -16,7 +16,7 @@ import {
   answerCallbackQuery,
 } from "@/services/telegram.service";
 import { parseTransactionFromText } from "@/services/ai-transaction-parser.service";
-import { createTransaction, deleteTransaction } from "@/services/transaction.service";
+import { createTransaction, deleteTransaction, updateTransactionAmount } from "@/services/transaction.service";
 import {
   afterExpenseKeyboard,
   afterIncomeKeyboard,
@@ -26,6 +26,8 @@ import {
   incomeCategoryKeyboard,
   paginationKeyboard,
   configMenuKeyboard,
+  txListKeyboard,
+  confirmTxDeleteKeyboard,
   emptyKeyboard,
 } from "@/services/telegram-keyboards";
 import { mainMenu, MENU_BUTTONS } from "@/services/telegram-menus";
@@ -90,6 +92,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
   if (text.startsWith("/config")) { await handleConfig(chatId); return; }
   if (text.startsWith("/resumo")) { await handleResumo(chatId, telegramUserId); return; }
   if (text.startsWith("/ultimas")) { await handleUltimas(chatId, telegramUserId, 1); return; }
+  if (text.startsWith("/gerenciar")) { await handleGerenciar(chatId, telegramUserId, 1); return; }
   if (text.startsWith("/vincular")) {
     const token = text.split(" ")[1]?.toUpperCase();
     await handleVincular(chatId, telegramUserId, token);
@@ -126,6 +129,10 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     const state = await getState(user.id);
     if (state?.state === ConversationState.WAITING_AMOUNT) {
       await handleAmountFromState(chatId, user, text, state.category!, state.transactionType!);
+      return;
+    }
+    if (state?.state === ConversationState.WAITING_EDIT_AMOUNT) {
+      await handleEditAmountFromState(chatId, user.id, text, state.txId!);
       return;
     }
   }
@@ -272,6 +279,111 @@ async function callbackRouter(
     return;
   }
 
+  // ── namespace: tx (gerenciar transações) ─────────────────────────────────
+  if (ns === "tx") {
+    const user = await db.user.findUnique({
+      where: { telegramId: String(telegramUserId) },
+      select: { id: true, coupleId: true },
+    });
+
+    if (!user) {
+      await answerCallbackQuery(cq.id, "🔗 Vincule sua conta primeiro");
+      return;
+    }
+
+    if (action === "page") {
+      await answerCallbackQuery(cq.id);
+      const page = parseInt(param ?? "1", 10) || 1;
+      await sendGerenciarPage(chatId, user.id, user.coupleId, page, messageId);
+      return;
+    }
+
+    if (action === "edit") {
+      const tx = await db.transaction.findFirst({
+        where: { id: param, userId: user.id },
+        select: { id: true, description: true, amount: true, type: true, category: { select: { name: true } } },
+      });
+      if (!tx) {
+        await answerCallbackQuery(cq.id, "❌ Transação não encontrada");
+        return;
+      }
+      await answerCallbackQuery(cq.id);
+      await setState(user.id, ConversationState.WAITING_EDIT_AMOUNT, { txId: tx.id });
+      const emoji = tx.type === "expense" ? "💸" : "💰";
+      const catName = tx.category?.name ?? "";
+      const prompt =
+        `✏️ *Editar valor*\n\n` +
+        `${emoji} ${formatCurrency(tx.amount)}${catName ? ` — ${catName}` : ""}\n` +
+        `📝 ${tx.description}\n\n` +
+        `Qual o novo valor?`;
+      if (messageId) {
+        await editMessageText(chatId, messageId, prompt, cancelFlowKeyboard());
+      } else {
+        await sendWithKeyboard(chatId, prompt, cancelFlowKeyboard());
+      }
+      return;
+    }
+
+    if (action === "delete") {
+      const tx = await db.transaction.findFirst({
+        where: { id: param, userId: user.id },
+        select: { id: true, description: true, amount: true, type: true },
+      });
+      if (!tx) {
+        await answerCallbackQuery(cq.id, "❌ Transação não encontrada");
+        return;
+      }
+      await answerCallbackQuery(cq.id);
+      const emoji = tx.type === "expense" ? "💸" : "💰";
+      const confirmText =
+        `⚠️ *Confirmar exclusão?*\n\n` +
+        `${emoji} ${formatCurrency(tx.amount)} — ${tx.description}`;
+      if (messageId) {
+        await editMessageText(chatId, messageId, confirmText, confirmTxDeleteKeyboard(tx.id));
+      } else {
+        await sendWithKeyboard(chatId, confirmText, confirmTxDeleteKeyboard(tx.id));
+      }
+      return;
+    }
+
+    if (action === "confirmdelete") {
+      const tx = await db.transaction.findFirst({
+        where: { id: param, userId: user.id },
+        select: { id: true, description: true, amount: true, type: true },
+      });
+      if (!tx) {
+        await answerCallbackQuery(cq.id, "❌ Não encontrada");
+        if (messageId) await editMessageText(chatId, messageId, `❌ Transação não encontrada.`, emptyKeyboard);
+        return;
+      }
+      try {
+        await deleteTransaction(tx.id, user.id);
+        const emoji = tx.type === "expense" ? "💸" : "💰";
+        await answerCallbackQuery(cq.id, "✅ Excluída!");
+        const doneText = `✅ *Transação excluída!*\n\n${emoji} ${formatCurrency(tx.amount)} — ${tx.description}`;
+        if (messageId) {
+          await editMessageText(chatId, messageId, doneText, emptyKeyboard);
+        } else {
+          await sendTelegramMessage(chatId, doneText);
+        }
+      } catch {
+        await answerCallbackQuery(cq.id, "❌ Erro ao excluir");
+        if (messageId) await editMessageText(chatId, messageId, `❌ Não foi possível excluir.`, emptyKeyboard);
+      }
+      return;
+    }
+
+    if (action === "canceldelete") {
+      await answerCallbackQuery(cq.id, "✋ Cancelado");
+      // Volta para a lista gerenciável
+      await sendGerenciarPage(chatId, user.id, user.coupleId, 1, messageId);
+      return;
+    }
+
+    await answerCallbackQuery(cq.id);
+    return;
+  }
+
   // Fallback para callbacks antigos (compatibilidade com mensagens já enviadas)
   if (data.startsWith("undo_confirm:")) {
     await answerCallbackQuery(cq.id);
@@ -414,6 +526,135 @@ async function handleCancelar(chatId: number, telegramUserId: number): Promise<v
   await sendTelegramMessage(chatId, `✋ Operação cancelada.`);
 }
 
+// ── Fluxo: valor digitado para edição de transação ───────────────────────
+
+async function handleEditAmountFromState(
+  chatId: number,
+  userId: string,
+  text: string,
+  txId: string
+): Promise<void> {
+  const amount = parseAmount(text);
+
+  if (!amount) {
+    await sendWithKeyboard(
+      chatId,
+      `❌ Não entendi o valor. Tente: \`45\` ou \`45,50\``,
+      cancelFlowKeyboard()
+    );
+    return;
+  }
+
+  await clearState(userId);
+
+  const tx = await db.transaction.findFirst({
+    where: { id: txId, userId },
+    select: { id: true, description: true, amount: true, type: true, category: { select: { name: true } } },
+  });
+
+  if (!tx) {
+    await sendTelegramMessage(chatId, `❌ Transação não encontrada. Pode ter sido excluída.`);
+    return;
+  }
+
+  try {
+    await updateTransactionAmount(txId, userId, amount);
+    const emoji = tx.type === "expense" ? "💸" : "💰";
+    const catName = tx.category?.name ?? "";
+    await sendWithKeyboard(
+      chatId,
+      `✅ *Valor atualizado!*\n\n` +
+      `${emoji} ${formatCurrency(tx.amount)} → *${formatCurrency(amount)}*\n` +
+      `📝 ${tx.description}${catName ? `\n🏷 ${catName}` : ""}`,
+      afterExpenseKeyboard(txId)
+    );
+  } catch (err) {
+    console.error("[Telegram] Erro ao atualizar transação:", err);
+    await sendTelegramMessage(chatId, `❌ Não foi possível atualizar. Tente novamente.`);
+  }
+}
+
+// ── Gerenciar transações ──────────────────────────────────────────────────
+
+async function handleGerenciar(chatId: number, telegramUserId: number, page: number): Promise<void> {
+  const user = await db.user.findUnique({
+    where: { telegramId: String(telegramUserId) },
+    select: { id: true, coupleId: true },
+  });
+
+  if (!user) {
+    await sendTelegramMessage(chatId, `🔗 Você ainda não vinculou sua conta.`);
+    return;
+  }
+
+  await sendGerenciarPage(chatId, user.id, user.coupleId, page);
+}
+
+async function sendGerenciarPage(
+  chatId: number,
+  userId: string,
+  coupleId: string | null,
+  page: number,
+  editMessageId?: number
+): Promise<void> {
+  const where = {
+    OR: [{ userId }, ...(coupleId ? [{ coupleId }] : [])],
+  };
+
+  const [total, transactions] = await Promise.all([
+    db.transaction.count({ where }),
+    db.transaction.findMany({
+      where,
+      orderBy: { date: "desc" },
+      skip: (page - 1) * PAGE_SIZE,
+      take: PAGE_SIZE,
+      select: {
+        id: true,
+        description: true,
+        amount: true,
+        type: true,
+        date: true,
+        userId: true,
+        category: { select: { name: true } },
+      },
+    }),
+  ]);
+
+  if (transactions.length === 0) {
+    const msg = `📭 Nenhuma transação encontrada.`;
+    if (editMessageId) {
+      await editMessageText(chatId, editMessageId, msg, emptyKeyboard);
+    } else {
+      await sendTelegramMessage(chatId, msg);
+    }
+    return;
+  }
+
+  const totalPages = Math.ceil(total / PAGE_SIZE);
+  const lines = transactions.map((t, i) => {
+    const emoji = t.type === "expense" ? "💸" : "💰";
+    const dateStr = format(t.date, "dd/MM");
+    const cat = t.category?.name ? ` _${t.category.name}_` : "";
+    const mine = t.userId === userId ? "" : " 👫";
+    return `${i + 1}. ${emoji} ${dateStr} *${formatCurrency(t.amount)}*${cat} — ${t.description}${mine}`;
+  });
+
+  const header = totalPages > 1
+    ? `📋 *Gerenciar transações* (pág. ${page}/${totalPages}):\n\n`
+    : `📋 *Gerenciar transações:*\n\n`;
+
+  const footer = `\n\n_✏️ = editar valor  🗑 = excluir_`;
+  const text = header + lines.join("\n") + footer;
+  const txIds = transactions.map((t) => t.id);
+  const keyboard = txListKeyboard(txIds, page, totalPages);
+
+  if (editMessageId) {
+    await editMessageText(chatId, editMessageId, text, keyboard);
+  } else {
+    await sendWithKeyboard(chatId, text, keyboard);
+  }
+}
+
 // ── handleUndoConfirm ─────────────────────────────────────────────────────
 
 async function handleUndoConfirm(
@@ -525,6 +766,7 @@ async function handleHelp(chatId: number): Promise<void> {
     `/vincular CODIGO — vincula sua conta\n` +
     `/resumo — resumo de gastos do mês\n` +
     `/ultimas — últimas transações\n` +
+    `/gerenciar — editar ou excluir transações\n` +
     `/desfazer — remove a última transação\n` +
     `/config — configurações\n` +
     `/ajuda — exibe esta mensagem\n\n` +
