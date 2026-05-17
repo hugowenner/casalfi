@@ -76,6 +76,12 @@ const CATEGORY_DEFAULT_DESCRIPTION: Record<string, string> = {
 // ── handleTelegramUpdate ──────────────────────────────────────────────────
 
 export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void> {
+  console.log("🧭 ENTRY POINT UPDATE:", {
+    type: update.callback_query ? "callback" : "message",
+    text: update.message?.text,
+    callbackData: update.callback_query?.data,
+  });
+
   if (update.callback_query) {
     await callbackRouter(update.callback_query);
     return;
